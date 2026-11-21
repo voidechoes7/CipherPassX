@@ -8,6 +8,7 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+*.tsbuildinfo
 
 # Tauri / Mobile builds
 src-tauri/gen/android/app/build/
