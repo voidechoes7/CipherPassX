@@ -146,3 +146,9 @@ export interface SecurityAuditReport {
   post_quantum_ready: boolean;
   overall_score: number;
 }
+
+export interface MlKem1024Keypair {
+  public_key_b64: string;
+  secret_key_b64: string;
+  fingerprint: string;
+}

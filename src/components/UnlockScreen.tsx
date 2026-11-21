@@ -123,7 +123,7 @@ export const UnlockScreen: React.FC<Props> = ({ onUnlocked }) => {
   };
 
   return (
-    <div className="min-h-full flex flex-col items-center justify-center p-4 sm:p-6 bg-[radial-gradient(ellipse_at_top,_rgba(0,240,255,0.08),_transparent_60%),radial-gradient(ellipse_at_bottom_right,_rgba(139,92,246,0.08),_transparent_55%)]">
+    <div className="min-h-full cyber-grid flex flex-col items-center justify-center p-4 sm:p-6 bg-[radial-gradient(ellipse_at_top,_rgba(0,240,255,0.10),_transparent_58%),radial-gradient(ellipse_at_bottom_right,_rgba(139,92,246,0.10),_transparent_55%)]">
       <div className="w-full max-w-xl cyber-panel rounded-2xl p-6 sm:p-8 space-y-6">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">

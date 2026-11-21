@@ -12,6 +12,7 @@ pub mod generator;
 pub mod kdbx;
 pub mod kdbx_xml;
 pub mod model;
+pub mod pq_armor;
 pub mod totp;
 pub mod variant_dict;
 
@@ -33,4 +34,5 @@ pub use model::{
     CustomField, DeletedObject, EntryHistoryItem, EntryTimes, InnerBinary, ProtectedString, Vault,
     VaultEntry, VaultGroup, VaultMeta, FAVORITE_TAG,
 };
+pub use pq_armor::{generate_mlkem1024_keypair, pq_seal_bytes, pq_unseal_bytes, MlKem1024Keypair};
 pub use totp::{generate_totp_at, generate_totp_now, parse_totp_uri, TotpAlgorithm, TotpCode};

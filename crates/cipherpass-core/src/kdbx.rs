@@ -38,6 +38,8 @@ const INNER_RANDOM_STREAM_KEY: u8 = 2;
 const INNER_BINARY: u8 = 3;
 
 const HMAC_BLOCK_SIZE: usize = 64 * 1024; // 64 KiB chunks per KDBX 4 convention
+/// Hard cap on decompressed inner KDBX payload (64 MiB) to defend against GZip zip-bomb DoS.
+const MAX_DECOMPRESSED_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 fn write_tlv(out: &mut Vec<u8>, field_id: u8, data: &[u8]) {
     out.push(field_id);
@@ -350,11 +352,17 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
     // 5. Decrypt outer payload
     let decrypted = decrypt_outer(cipher, &keys.master_key, &encryption_iv, &ciphertext)?;
 
-    // 6. Optional GZip decompression
+    // 6. Optional GZip decompression (bounded to prevent zip-bomb OOM DoS)
     let inner_bytes = if compression {
-        let mut decoder = GzDecoder::new(decrypted.as_slice());
+        let decoder = GzDecoder::new(decrypted.as_slice());
+        let mut bounded = decoder.take(MAX_DECOMPRESSED_PAYLOAD_BYTES + 1);
         let mut out = Zeroizing::new(Vec::new());
-        decoder.read_to_end(&mut out)?;
+        bounded.read_to_end(&mut out)?;
+        if out.len() as u64 > MAX_DECOMPRESSED_PAYLOAD_BYTES {
+            return Err(CipherPassError::MalformedFormat(
+                "Decompressed KDBX payload exceeds 64 MiB safety limit".into(),
+            ));
+        }
         out
     } else {
         decrypted
@@ -446,10 +454,14 @@ pub fn atomic_write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp_path = parent.join(tmp_name);
 
     let write_result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)?;
+        let mut opts = OpenOptions::new();
+        opts.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp_path)?;
         file.write_all(bytes)?;
         file.flush()?;
         file.sync_all()?;

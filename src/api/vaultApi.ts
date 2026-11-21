@@ -11,6 +11,7 @@ import type {
   GroupNode,
   KdfAlgorithm,
   KdfConfig,
+  MlKem1024Keypair,
   PassphraseGenOptions,
   PasswordGenOptions,
   SecurityAuditReport,
@@ -149,9 +150,46 @@ export const vaultApi = {
   exportVaultBackup: (destPath: string) =>
     invoke<string>("export_vault_backup", { destPath }),
 
+  generatePqKeypair: () => invoke<MlKem1024Keypair>("generate_pq_keypair_cmd"),
+
+  exportPqArmoredVault: (destPath: string, publicKeyB64: string) =>
+    invoke<string>("export_pq_armored_vault", {
+      destPath,
+      publicKeyB64,
+    }),
+
+  unsealPqArmoredVault: (
+    srcPqPath: string,
+    destKdbxPath: string,
+    secretKeyB64: string
+  ) =>
+    invoke<string>("unseal_pq_armored_vault", {
+      srcPqPath,
+      destKdbxPath,
+      secretKeyB64,
+    }),
+
   onAutoLocked: (cb: () => void) =>
     isTauriRuntime() ? listen("vault-auto-locked", cb) : Promise.resolve(() => {}),
 
   onClipboardCleared: (cb: () => void) =>
     isTauriRuntime() ? listen("clipboard-cleared", cb) : Promise.resolve(() => {}),
 };
+
+export async function pickSavePqFile(defaultName = "CipherPass.kdbx.pq"): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await saveDialog({
+    defaultPath: defaultName,
+    filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickOpenPqFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}

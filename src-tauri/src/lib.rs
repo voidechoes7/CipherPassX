@@ -2,22 +2,24 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use cipherpass_core::{
-    atomic_write_file, evaluate_password, generate_keyfile_v2_xml, generate_passphrase,
-    generate_password, generate_totp_now, open_kdbx_file, run_vault_audit, save_kdbx_file_atomic,
-    CipherAlgorithm, CustomField, EntropyReport, GeneratedSecret, KdfAlgorithm, KdfConfig,
-    MasterCredentials, PassphraseGenOptions, PasswordGenOptions, ProtectedString,
+    atomic_write_file, evaluate_password, generate_keyfile_v2_xml, generate_mlkem1024_keypair,
+    generate_passphrase, generate_password, generate_totp_now, open_kdbx_file, pq_seal_bytes,
+    pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, save_kdbx_file_atomic, CipherAlgorithm,
+    CustomField, EntropyReport, GeneratedSecret, KdfAlgorithm, KdfConfig, MasterCredentials,
+    MlKem1024Keypair, PassphraseGenOptions, PasswordGenOptions, ProtectedString,
     SecurityAuditReport, TotpCode, Vault, VaultEntry, VaultGroup,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 struct UnlockedSession {
     vault: Vault,
@@ -51,6 +53,7 @@ struct SharedState {
     session: Mutex<Option<UnlockedSession>>,
     config: Mutex<AppConfig>,
     clipboard_generation: AtomicU64,
+    failed_unlock_attempts: AtomicU32,
 }
 
 impl SharedState {
@@ -59,6 +62,7 @@ impl SharedState {
             session: Mutex::new(None),
             config: Mutex::new(AppConfig::default()),
             clipboard_generation: AtomicU64::new(0),
+            failed_unlock_attempts: AtomicU32::new(0),
         }
     }
 }
@@ -708,6 +712,7 @@ fn copy_secret_with_auto_clear(
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<u64, String> {
+    let secret = Zeroizing::new(secret);
     let timeout = {
         let cfg = state.config.lock().map_err(|e| e.to_string())?;
         clear_seconds
@@ -716,7 +721,7 @@ fn copy_secret_with_auto_clear(
     };
 
     app.clipboard()
-        .write_text(secret)
+        .write_text(secret.as_str())
         .map_err(|e| format!("Clipboard write failed: {e}"))?;
 
     let gen_id = state.clipboard_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -803,6 +808,49 @@ fn export_vault_backup(
     Ok(dest_path)
 }
 
+#[tauri::command]
+fn generate_pq_keypair_cmd() -> Result<MlKem1024Keypair, String> {
+    generate_mlkem1024_keypair().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_pq_armored_vault(
+    dest_path: String,
+    public_key_b64: String,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<String, String> {
+    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+    let sess = sess_guard
+        .as_mut()
+        .ok_or_else(|| "Vault is locked".to_string())?;
+    sess.touch();
+
+    let kdbx_bytes =
+        Zeroizing::new(save_kdbx_bytes(&sess.vault, &sess.credentials).map_err(|e| e.to_string())?);
+    let sealed =
+        pq_seal_bytes(kdbx_bytes.as_slice(), &public_key_b64).map_err(|e| e.to_string())?;
+    atomic_write_file(PathBuf::from(&dest_path).as_path(), &sealed).map_err(|e| e.to_string())?;
+    Ok(dest_path)
+}
+
+#[tauri::command]
+fn unseal_pq_armored_vault(
+    src_pq_path: String,
+    dest_kdbx_path: String,
+    secret_key_b64: String,
+) -> Result<String, String> {
+    let secret_key_b64 = Zeroizing::new(secret_key_b64);
+    let sealed = fs::read(&src_pq_path).map_err(|e| format!("Failed to read .kdbx.pq: {e}"))?;
+    let kdbx_bytes =
+        pq_unseal_bytes(&sealed, secret_key_b64.as_str()).map_err(|e| e.to_string())?;
+    atomic_write_file(
+        PathBuf::from(&dest_kdbx_path).as_path(),
+        kdbx_bytes.as_slice(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(dest_kdbx_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shared_state = Arc::new(SharedState::new());
@@ -813,7 +861,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(shared_state)
         .setup(move |app| {
-            // Background inactivity auto-lock watchdog (zeroizes secrets automatically)
+            // Background inactivity auto-lock watchdog (zeroizes secrets & clears clipboard)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(5));
@@ -839,6 +887,10 @@ pub fn run() {
                     }
                 }
                 if locked_now {
+                    monitor_state
+                        .clipboard_generation
+                        .fetch_add(1, Ordering::SeqCst);
+                    let _ = app_handle.clipboard().clear();
                     let _ = app_handle.emit("vault-auto-locked", ());
                 }
             });
@@ -867,6 +919,9 @@ pub fn run() {
             update_security_settings,
             run_security_audit_cmd,
             export_vault_backup,
+            generate_pq_keypair_cmd,
+            export_pq_armored_vault,
+            unseal_pq_armored_vault,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CipherPass Tauri application");

@@ -258,3 +258,39 @@ fn offline_security_audit_detects_weak_and_reused_passwords() {
     assert!(report.kdf_meets_safe_floor);
     assert!(!report.post_quantum_ready);
 }
+
+#[test]
+fn fips203_mlkem1024_post_quantum_armor_roundtrip_and_tamper_detection() {
+    use cipherpass_core::{generate_mlkem1024_keypair, pq_seal_bytes, pq_unseal_bytes};
+
+    let vault = build_sample_vault(CipherAlgorithm::ChaCha20, KdfConfig::test_fast());
+    let creds = MasterCredentials::from_password("quantum-armor-master");
+    let kdbx_bytes = save_kdbx_bytes(&vault, &creds).expect("save KDBX 4");
+
+    let kp1 = generate_mlkem1024_keypair().expect("generate ML-KEM-1024 keypair 1");
+    let kp2 = generate_mlkem1024_keypair().expect("generate ML-KEM-1024 keypair 2");
+    assert_eq!(kp1.fingerprint.len(), 16);
+
+    // Seal .kdbx inside FIPS 203 ML-KEM-1024 + ChaCha20-Poly1305 envelope
+    let sealed = pq_seal_bytes(&kdbx_bytes, &kp1.public_key_b64).expect("PQ seal");
+
+    // Unseal with matching ML-KEM-1024 secret key -> exact byte-for-byte match
+    let unsealed = pq_unseal_bytes(&sealed, &kp1.secret_key_b64).expect("PQ unseal");
+    assert_eq!(unsealed.as_slice(), kdbx_bytes.as_slice());
+
+    // Reopen inner KDBX 4 vault cleanly
+    let reopened = open_kdbx_bytes(unsealed.as_slice(), &creds).expect("open unsealed KDBX");
+    assert_eq!(
+        reopened.all_entries()[0].1.password.expose(),
+        "R0tat3d!PQ#UltraSecure-99"
+    );
+
+    // Wrong ML-KEM-1024 secret key MUST fail authentication
+    assert!(pq_unseal_bytes(&sealed, &kp2.secret_key_b64).is_err());
+
+    // Flipping 1 bit in the sealed ciphertext MUST fail Poly1305 AAD/tag check
+    let mut tampered = sealed.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    assert!(pq_unseal_bytes(&tampered, &kp1.secret_key_b64).is_err());
+}
