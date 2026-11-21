@@ -1,0 +1,52 @@
+name: CipherPass CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-core:
+    name: Rust KDBX 4 Core (Test & Clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (-D warnings)
+        run: cargo clippy -p cipherpass-core --all-targets -- -D warnings
+      - name: Run KDBX 4 interoperability & tamper-detection tests
+        run: cargo test -p cipherpass-core -- --nocapture
+
+  frontend-and-tauri-check:
+    name: Frontend Build & Tauri 2 Workspace Check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Linux WebKit/GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install & build frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+      - name: Check full workspace (including src-tauri)
+        run: cargo clippy --workspace --all-targets -- -D warnings

@@ -1,0 +1,35 @@
+# Rust / Cargo
+/target
+**/target
+Cargo.lock
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri / Mobile builds
+src-tauri/gen/android/app/build/
+src-tauri/gen/apple/build/
+*.apk
+*.aab
+*.ipa
+*.exe
+*.msi
+*.deb
+*.AppImage
+
+# Vault / Secret files (never commit!)
+*.kdbx
+*.kdbx.tmp.*
+*.keyx
+*.key
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/cipherpass-core",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Proprietary"
+authors = ["voidechoes7"]
+repository = "https://github.com/voidechoes7/CipherPassX"
+
+[workspace.dependencies]
+aes = "0.8"
+argon2 = "0.5"
+base32 = "0.5"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+chacha20 = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1.0"
+hex = "0.4"
+hmac = "0.12"
+quick-xml = "0.37"
+rand_core = { version = "0.6", features = ["getrandom"] }
+salsa20 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10"
+sha2 = "0.10"
+subtle = "2.6"
+thiserror = "2.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+zeroize = { version = "1.8", features = ["derive"] }

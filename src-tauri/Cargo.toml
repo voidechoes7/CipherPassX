@@ -1,0 +1,24 @@
+[package]
+name = "cipherpass"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CipherPass — 100% Offline Multiplatform KDBX 4 Password Manager"
+
+[lib]
+name = "cipherpass_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono.workspace = true
+cipherpass-core = { path = "../crates/cipherpass-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+uuid.workspace = true
+zeroize.workspace = true
