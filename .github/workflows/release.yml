@@ -111,17 +111,17 @@ jobs:
           npx tauri ios init --ci
       - name: Build unsigned iOS archive & package .ipa
         run: |
-          PBXPROJ="src-tauri/gen/apple/cipherpass.xcodeproj/project.pbxproj"
           python3 -c '
           p = "src-tauri/gen/apple/cipherpass.xcodeproj/project.pbxproj"
           s = open(p).read()
-          s = s.replace("CODE_SIGN_STYLE = Automatic;", "CODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = \"\";\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;")
+          inject = "buildSettings = {\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = \"\";\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tDEVELOPMENT_TEAM = \"\";"
+          s = s.replace("buildSettings = {", inject)
           open(p, "w").write(s)
           '
           npx tauri ios build --target aarch64 --ci || true
-          APP_PATH=$(find src-tauri/gen/apple/build -name "*.app" -type d | head -n 1)
+          APP_PATH=$(find src-tauri/gen/apple/build ~/Library/Developer/Xcode/DerivedData -name "CipherPass.app" -type d 2>/dev/null | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: No .app bundle produced by tauri ios build!"
+            echo "ERROR: No CipherPass.app bundle produced by tauri ios build!"
             exit 1
           fi
           echo "Packaging unsigned IPA from: $APP_PATH"
