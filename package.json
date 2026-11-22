@@ -1,7 +1,7 @@
 {
   "name": "cipherpass",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-biometric": "^2.2.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "lucide-react": "^0.469.0",

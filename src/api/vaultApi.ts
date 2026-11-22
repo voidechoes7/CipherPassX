@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { checkStatus as checkBiometricStatus } from "@tauri-apps/plugin-biometric";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type {
   CipherAlgorithm,
@@ -24,20 +25,50 @@ export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+export function isMobilePlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+export async function checkBiometricAvailable(): Promise<boolean> {
+  if (!isTauriRuntime() || !isMobilePlatform()) return false;
+  try {
+    const status = await checkBiometricStatus();
+    return Boolean(status.isAvailable);
+  } catch {
+    return false;
+  }
+}
+
 export async function pickOpenKdbxFile(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const selected = await openDialog({
     multiple: false,
-    filters: [{ name: "KeePass KDBX 4 Database", extensions: ["kdbx"] }],
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "KeePass KDBX 4 Database", extensions: ["kdbx"] }] }),
   });
   return typeof selected === "string" ? selected : null;
 }
 
 export async function pickSaveKdbxFile(defaultName = "CipherPass.kdbx"): Promise<string | null> {
   if (!isTauriRuntime()) return null;
+  // On Android/iOS, omitting custom MIME filters prevents SAF ACTION_CREATE_DOCUMENT
+  // from disabling the "Save" button in certain file managers.
   const selected = await saveDialog({
     defaultPath: defaultName,
-    filters: [{ name: "KeePass KDBX 4 Database", extensions: ["kdbx"] }],
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "KeePass KDBX 4 Database", extensions: ["kdbx"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    directory: true,
+    multiple: false,
   });
   return typeof selected === "string" ? selected : null;
 }
@@ -46,7 +77,9 @@ export async function pickOpenKeyfile(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const selected = await openDialog({
     multiple: false,
-    filters: [{ name: "KeePass Keyfile", extensions: ["keyx", "key", "xml"] }],
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "KeePass Keyfile", extensions: ["keyx", "key", "xml"] }] }),
   });
   return typeof selected === "string" ? selected : null;
 }
@@ -55,7 +88,31 @@ export async function pickSaveKeyfile(defaultName = "CipherPass.keyx"): Promise<
   if (!isTauriRuntime()) return null;
   const selected = await saveDialog({
     defaultPath: defaultName,
-    filters: [{ name: "KeePass Keyfile v2.0 XML", extensions: ["keyx", "xml"] }],
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "KeePass Keyfile v2.0 XML", extensions: ["keyx", "xml"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickSavePqFile(defaultName = "CipherPass.kdbx.pq"): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await saveDialog({
+    defaultPath: defaultName,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickOpenPqFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    multiple: false,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }] }),
   });
   return typeof selected === "string" ? selected : null;
 }
@@ -64,6 +121,10 @@ export const vaultApi = {
   getDefaultVaultDir: () => invoke<string>("get_default_vault_dir"),
   listLocalVaults: () => invoke<LocalVaultInfo[]>("list_local_vaults"),
   clearClipboardNow: () => invoke<void>("clear_clipboard_now"),
+  hasBiometricSlot: (path: string) => invoke<boolean>("has_biometric_slot", { path }),
+  enableBiometricUnlock: () => invoke<boolean>("enable_biometric_unlock"),
+  disableBiometricUnlock: () => invoke<boolean>("disable_biometric_unlock"),
+  unlockVaultBiometric: (path: string) => invoke<VaultStatus>("unlock_vault_biometric", { path }),
   getStatus: () => invoke<VaultStatus>("get_vault_status"),
 
   createVault: (req: {
@@ -179,21 +240,3 @@ export const vaultApi = {
   onClipboardCleared: (cb: () => void) =>
     isTauriRuntime() ? listen("clipboard-cleared", cb) : Promise.resolve(() => {}),
 };
-
-export async function pickSavePqFile(defaultName = "CipherPass.kdbx.pq"): Promise<string | null> {
-  if (!isTauriRuntime()) return null;
-  const selected = await saveDialog({
-    defaultPath: defaultName,
-    filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }],
-  });
-  return typeof selected === "string" ? selected : null;
-}
-
-export async function pickOpenPqFile(): Promise<string | null> {
-  if (!isTauriRuntime()) return null;
-  const selected = await openDialog({
-    multiple: false,
-    filters: [{ name: "CipherPass ML-KEM-1024 Vault", extensions: ["pq"] }],
-  });
-  return typeof selected === "string" ? selected : null;
-}

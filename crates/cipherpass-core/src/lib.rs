@@ -6,6 +6,7 @@
 //! (ChaCha20 / AES-256-CBC + HMAC-SHA256 + Argon2id/Argon2d + ChaCha20 inner stream + `zeroize`).
 
 pub mod audit;
+pub mod biometric_slot;
 pub mod crypto;
 pub mod error;
 pub mod generator;
@@ -17,6 +18,9 @@ pub mod totp;
 pub mod variant_dict;
 
 pub use audit::{run_vault_audit, AuditIssueItem, SecurityAuditReport};
+pub use biometric_slot::{
+    seal_biometric_slot, unseal_biometric_slot, vault_slot_id, BiometricVaultCredentials,
+};
 pub use crypto::{
     generate_keyfile_v2_xml, parse_keyfile_bytes, CipherAlgorithm, KdfAlgorithm, KdfConfig,
     MasterCredentials, MAX_KDF_ITERATIONS, MAX_KDF_MEMORY_MIB, MAX_KDF_PARALLELISM,

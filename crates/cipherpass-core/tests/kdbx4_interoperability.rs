@@ -294,3 +294,38 @@ fn fips203_mlkem1024_post_quantum_armor_roundtrip_and_tamper_detection() {
     tampered[last] ^= 0x01;
     assert!(pq_unseal_bytes(&tampered, &kp1.secret_key_b64).is_err());
 }
+
+#[test]
+fn biometric_vault_keyslot_roundtrip_and_tamper_detection() {
+    use cipherpass_core::{
+        seal_biometric_slot, unseal_biometric_slot, vault_slot_id, BiometricVaultCredentials,
+    };
+
+    let device_secret = [0x42u8; 32];
+    let vault_id = vault_slot_id("/data/user/0/com.voidechoes7.cipherpass/files/vaults/main.kdbx");
+    let other_vault_id =
+        vault_slot_id("/data/user/0/com.voidechoes7.cipherpass/files/vaults/other.kdbx");
+
+    let creds = BiometricVaultCredentials {
+        master_password: Some("UltraStrong!PQ#Master2026".to_string()),
+        keyfile_path: Some("/secure/key.keyx".to_string()),
+    };
+
+    let sealed = seal_biometric_slot(&creds, &device_secret, &vault_id).expect("seal bio slot");
+    let unsealed =
+        unseal_biometric_slot(&sealed, &device_secret, &vault_id).expect("unseal bio slot");
+    assert_eq!(
+        unsealed.master_password.as_deref(),
+        Some("UltraStrong!PQ#Master2026")
+    );
+    assert_eq!(unsealed.keyfile_path.as_deref(), Some("/secure/key.keyx"));
+
+    // Vault AAD binding: cannot replay slot against a different vault path
+    assert!(unseal_biometric_slot(&sealed, &device_secret, &other_vault_id).is_err());
+
+    // Tamper detection: flipping 1 bit fails Poly1305 verification
+    let mut tampered = sealed.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x04;
+    assert!(unseal_biometric_slot(&tampered, &device_secret, &vault_id).is_err());
+}

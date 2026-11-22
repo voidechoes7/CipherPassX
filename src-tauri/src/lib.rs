@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use cipherpass_core::crypto::random_bytes;
 use cipherpass_core::{
     atomic_write_file, evaluate_password, generate_keyfile_v2_xml, generate_mlkem1024_keypair,
     generate_passphrase, generate_password, generate_totp_now, open_kdbx_bytes, pq_seal_bytes,
-    pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, CipherAlgorithm, CustomField, EntropyReport,
+    pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, seal_biometric_slot, unseal_biometric_slot,
+    vault_slot_id, BiometricVaultCredentials, CipherAlgorithm, CustomField, EntropyReport,
     GeneratedSecret, KdfAlgorithm, KdfConfig, MasterCredentials, MlKem1024Keypair,
     PassphraseGenOptions, PasswordGenOptions, ProtectedString, SecurityAuditReport, TotpCode,
     Vault, VaultEntry, VaultGroup,
@@ -150,9 +152,40 @@ fn persist_session(app: &AppHandle, sess: &mut UnlockedSession) -> Result<(), St
     Ok(())
 }
 
+fn keystore_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve app_local_data_dir: {e}"))?;
+    let dir = base.join(".keystore");
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create keystore directory: {e}"))?;
+    Ok(dir)
+}
+
+fn load_or_create_device_secret(app: &AppHandle) -> Result<Zeroizing<[u8; 32]>, String> {
+    let key_path = keystore_dir(app)?.join("device.key");
+    if key_path.exists() {
+        let raw = fs::read(&key_path).map_err(|e| format!("Failed to read device key: {e}"))?;
+        if raw.len() == 32 {
+            let mut arr = Zeroizing::new([0u8; 32]);
+            arr.copy_from_slice(&raw);
+            return Ok(arr);
+        }
+    }
+    let fresh = Zeroizing::new(random_bytes::<32>());
+    atomic_write_file(&key_path, fresh.as_slice()).map_err(|e| e.to_string())?;
+    Ok(fresh)
+}
+
+fn biometric_slot_path(app: &AppHandle, canonical_path: &str) -> Result<PathBuf, String> {
+    let id = vault_slot_id(canonical_path);
+    Ok(keystore_dir(app)?.join(format!("{id}.bio")))
+}
+
 struct UnlockedSession {
     vault: Vault,
     credentials: MasterCredentials,
+    keyfile_path: Option<String>,
     location: VaultLocation,
     last_activity: Instant,
     dirty: bool,
@@ -1066,15 +1099,173 @@ fn unseal_pq_armored_vault(
     Ok(dest_loc.display_string())
 }
 
+#[tauri::command]
+fn has_biometric_slot(path: String, app: AppHandle) -> Result<bool, String> {
+    let loc = resolve_location(&app, &path, ".kdbx")?;
+    let slot_path = biometric_slot_path(&app, &loc.display_string())?;
+    Ok(slot_path.exists())
+}
+
+#[tauri::command]
+fn enable_biometric_unlock(
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<bool, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        use tauri_plugin_biometric::{AuthOptions, BiometricExt};
+        app.biometric()
+            .authenticate(
+                "Confirm biometrics to bind your vault Master Key".to_string(),
+                AuthOptions {
+                    allow_device_credential: false,
+                    cancel_title: Some("Cancel".to_string()),
+                    fallback_title: Some("Use Master Password".to_string()),
+                    title: Some("Enable Biometric Vault Unlock".to_string()),
+                    subtitle: Some("Seal KDBX 4 credentials with ChaCha20-Poly1305".to_string()),
+                    confirmation_required: Some(true),
+                },
+            )
+            .map_err(|e| format!("Biometric verification failed: {e}"))?;
+    }
+
+    let (canonical, bio_creds) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault must be unlocked first".to_string())?;
+        sess.touch();
+        let canonical = sess.location.display_string();
+        let bio_creds = BiometricVaultCredentials {
+            master_password: sess.credentials.password.clone(),
+            keyfile_path: sess.keyfile_path.clone(),
+        };
+        (canonical, bio_creds)
+    };
+
+    let device_secret = load_or_create_device_secret(&app)?;
+    let vault_id = vault_slot_id(&canonical);
+    let sealed =
+        seal_biometric_slot(&bio_creds, &device_secret, &vault_id).map_err(|e| e.to_string())?;
+    let slot_path = biometric_slot_path(&app, &canonical)?;
+    atomic_write_file(&slot_path, &sealed).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn disable_biometric_unlock(
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<bool, String> {
+    let canonical = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+        sess.location.display_string()
+    };
+
+    let slot_path = biometric_slot_path(&app, &canonical)?;
+    if slot_path.exists() {
+        // Overwrite with zeroes before unlinking
+        if let Ok(meta) = fs::metadata(&slot_path) {
+            let zeros = vec![0u8; meta.len() as usize];
+            let _ = fs::write(&slot_path, zeros);
+        }
+        let _ = fs::remove_file(&slot_path);
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+fn unlock_vault_biometric(
+    path: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<VaultStatusDto, String> {
+    let location = resolve_location(&app, &path, ".kdbx")?;
+    let canonical = location.display_string();
+    let slot_path = biometric_slot_path(&app, &canonical)?;
+    if !slot_path.exists() {
+        return Err("Biometric unlock is not enabled for this vault".to_string());
+    }
+
+    // Enforce native OS BiometricPrompt (Android) / Face ID & Touch ID (iOS) in Rust
+    // BEFORE reading or decrypting the ChaCha20-Poly1305 vault keyslot.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        use tauri_plugin_biometric::{AuthOptions, BiometricExt};
+        app.biometric()
+            .authenticate(
+                "Authenticate to decrypt your CipherPass KDBX 4 vault".to_string(),
+                AuthOptions {
+                    allow_device_credential: false,
+                    cancel_title: Some("Cancel".to_string()),
+                    fallback_title: Some("Use Master Password".to_string()),
+                    title: Some("CipherPass Biometric Unlock".to_string()),
+                    subtitle: Some("Decrypt bound KDBX 4 Master Key".to_string()),
+                    confirmation_required: Some(true),
+                },
+            )
+            .map_err(|e| format!("Biometric authentication failed: {e}"))?;
+    }
+
+    let device_secret = load_or_create_device_secret(&app)?;
+    let vault_id = vault_slot_id(&canonical);
+    let slot_bytes =
+        fs::read(&slot_path).map_err(|e| format!("Failed to read biometric keyslot: {e}"))?;
+    let bio_creds =
+        unseal_biometric_slot(&slot_bytes, &device_secret, &vault_id).map_err(|e| e.to_string())?;
+
+    let saved_kf_path = bio_creds.keyfile_path.clone();
+    let keyfile_bytes = match saved_kf_path {
+        Some(ref p) => {
+            let kf_loc = resolve_location(&app, p, ".keyx")?;
+            Some(read_bytes_from_location(&app, &kf_loc)?)
+        }
+        None => None,
+    };
+
+    let credentials = MasterCredentials::from_password_and_keyfile(
+        bio_creds.master_password.clone(),
+        keyfile_bytes,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let raw_bytes = read_bytes_from_location(&app, &location)?;
+    let vault = open_kdbx_bytes(&raw_bytes, &credentials).map_err(|e| e.to_string())?;
+    state.failed_unlock_attempts.store(0, Ordering::SeqCst);
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        *sess_guard = Some(UnlockedSession {
+            vault,
+            credentials,
+            keyfile_path: saved_kf_path,
+            location,
+            last_activity: Instant::now(),
+            dirty: false,
+        });
+    }
+
+    build_status(&state)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shared_state = Arc::new(SharedState::new());
     let monitor_state = Arc::clone(&shared_state);
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let builder = builder.plugin(tauri_plugin_biometric::init());
+
+    builder
         .manage(shared_state)
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -1140,6 +1331,10 @@ pub fn run() {
             generate_pq_keypair_cmd,
             export_pq_armored_vault,
             unseal_pq_armored_vault,
+            has_biometric_slot,
+            enable_biometric_unlock,
+            disable_biometric_unlock,
+            unlock_vault_biometric,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CipherPass Tauri application");

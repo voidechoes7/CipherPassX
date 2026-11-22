@@ -5,6 +5,7 @@ import {
   Eye,
   EyeOff,
   FileKey2,
+  Fingerprint,
   FolderOpen,
   Lock,
   PlusCircle,
@@ -13,7 +14,10 @@ import {
   WifiOff,
 } from "lucide-react";
 import {
+  checkBiometricAvailable,
+  isMobilePlatform,
   isTauriRuntime,
+  pickFolder,
   pickOpenKdbxFile,
   pickOpenKeyfile,
   pickSaveKdbxFile,
@@ -60,9 +64,12 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [bioAvailable, setBioAvailable] = useState(false);
+  const [hasBioSlot, setHasBioSlot] = useState(false);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
+    checkBiometricAvailable().then(setBioAvailable).catch(() => {});
     vaultApi
       .getDefaultVaultDir()
       .then((dir) => setDefaultDir(dir))
@@ -77,6 +84,26 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
       })
       .catch(() => {});
   }, []);
+
+  // Check if selected vault has a biometric-bound ChaCha20-Poly1305 keyslot
+  useEffect(() => {
+    if (!isTauriRuntime() || mode !== "open" || !vaultPath.trim()) {
+      setHasBioSlot(false);
+      return;
+    }
+    let active = true;
+    vaultApi
+      .hasBiometricSlot(vaultPath.trim())
+      .then((exists) => {
+        if (active) setHasBioSlot(exists);
+      })
+      .catch(() => {
+        if (active) setHasBioSlot(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, vaultPath]);
 
   // Auto-fill guaranteed writable local path when switching to Create mode
   useEffect(() => {
@@ -116,11 +143,43 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
 
   const handleBrowseVault = async () => {
     setError(null);
+    const safeName =
+      databaseName
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "CipherPass";
     const picked =
       mode === "open"
         ? await pickOpenKdbxFile()
-        : await pickSaveKdbxFile(`${databaseName.replace(/\s+/g, "_") || "CipherPass"}.kdbx`);
+        : await pickSaveKdbxFile(`${safeName}.kdbx`);
     if (picked) setVaultPath(picked);
+  };
+
+  const handlePickFolder = async () => {
+    setError(null);
+    const folder = await pickFolder();
+    if (!folder) return;
+    const safeName =
+      databaseName
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "CipherPass";
+    const sep = folder.includes("\\") ? "\\" : "/";
+    setVaultPath(`${folder.replace(/[\\/]+$/, "")}${sep}${safeName}.kdbx`);
+  };
+
+  const handleBiometricUnlock = async () => {
+    if (!vaultPath.trim()) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const status = await vaultApi.unlockVaultBiometric(vaultPath.trim());
+      onUnlocked(status);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleBrowseKeyfile = async () => {
@@ -362,15 +421,33 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
                 placeholder={mode === "create" ? "CipherPass_Vault.kdbx" : "/path/to/vault.kdbx"}
                 className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2.5 text-xs sm:text-sm font-mono text-slate-100 focus:outline-none focus:border-cyan-400"
               />
+              {mode === "create" && !isMobilePlatform() && (
+                <button
+                  type="button"
+                  onClick={handlePickFolder}
+                  className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 shrink-0 transition"
+                  title="Pick a folder for the new vault"
+                >
+                  <FolderOpen className="w-4 h-4 text-violet-400" />
+                  Folder
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleBrowseVault}
                 className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 shrink-0 transition"
               >
                 <FolderOpen className="w-4 h-4 text-cyan-400" />
-                Browse
+                {mode === "create" && isMobilePlatform() ? "Save As" : "Browse"}
               </button>
             </div>
+            {mode === "create" && isMobilePlatform() && (
+              <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+                Default saves securely inside app storage (recommended). If you tap{" "}
+                <span className="text-cyan-300 font-medium">Save As</span>, open your target folder and tap{" "}
+                <span className="text-slate-200 font-medium">Save</span> at the bottom.
+              </p>
+            )}
           </div>
 
           {/* Master Password + KeePassDX-style Generator & Live Entropy Meter */}
@@ -578,6 +655,20 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
             <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/40 px-3.5 py-2.5 text-xs text-emerald-200 break-words">
               {info}
             </div>
+          )}
+
+          {mode === "open" && hasBioSlot && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={handleBiometricUnlock}
+              className="w-full py-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/50 text-emerald-200 font-semibold text-sm tracking-wide flex items-center justify-center gap-2 transition"
+            >
+              <Fingerprint className="w-4 h-4 text-emerald-300" />
+              {bioAvailable
+                ? "Unlock Vault with Fingerprint / Face ID"
+                : "Unlock Vault with Sealed Keyslot"}
+            </button>
           )}
 
           <button

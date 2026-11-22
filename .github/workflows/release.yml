@@ -148,6 +148,11 @@ jobs:
           npm run build
           npx tauri ios init --ci
           npx tauri icon src-tauri/icons/app-icon-source.png
+          PLIST=$(find src-tauri/gen/apple -name "Info.plist" | head -n 1)
+          if [ -n "$PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSFaceIDUsageDescription string Authenticate with Face ID to decrypt your CipherPass KDBX 4 vault." "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Set :NSFaceIDUsageDescription Authenticate with Face ID to decrypt your CipherPass KDBX 4 vault." "$PLIST"
+          fi
       - name: Build unsigned iOS archive & package .ipa
         run: |
           APP_VER=$(node -p "require('./package.json').version")

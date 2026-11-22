@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Atom, Download, FileKey2, Lock, Save, Shield, Unlock } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Atom, Download, FileKey2, Fingerprint, Lock, Save, Shield, Unlock } from "lucide-react";
 import {
   pickOpenPqFile,
   pickSaveKdbxFile,
@@ -40,6 +40,17 @@ export const SettingsView: React.FC<Props> = ({
   const [pqKeypair, setPqKeypair] = useState<MlKem1024Keypair | null>(null);
   const [pqPubKey, setPqPubKey] = useState("");
   const [pqSecKey, setPqSecKey] = useState("");
+
+  // Biometric Vault Keyslot state (ChaCha20-Poly1305 bound to this .kdbx Master Key)
+  const [bioEnabled, setBioEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!status.path) return;
+    vaultApi
+      .hasBiometricSlot(status.path)
+      .then(setBioEnabled)
+      .catch(() => setBioEnabled(false));
+  }, [status.path]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -232,6 +243,73 @@ export const SettingsView: React.FC<Props> = ({
           {saving ? "Re-encrypting..." : "Apply & Save Security Settings"}
         </button>
       </form>
+
+      {/* Biometric Vault Unlock (Bound to KDBX Master Key) */}
+      <div className="cyber-panel rounded-2xl p-5 space-y-3 border-emerald-500/30">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Fingerprint className="w-4 h-4 text-emerald-400" />
+              Biometric Vault Unlock (Bound to Master Password)
+            </h3>
+            <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+              Seals this vault&apos;s Master Password (+ Keyfile path) inside a ChaCha20-Poly1305 keyslot with AAD bound to this specific <code className="text-cyan-300">.kdbx</code>. Unlocking requires native OS Fingerprint / Face ID before Rust decrypts the vault.
+            </p>
+          </div>
+          <span
+            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border shrink-0 ${
+              bioEnabled
+                ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/40"
+                : "bg-slate-800 text-slate-400 border-slate-700"
+            }`}
+          >
+            {bioEnabled ? "ENABLED" : "OFF"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2.5">
+          {!bioEnabled ? (
+            <button
+              type="button"
+              onClick={async () => {
+                setError(null);
+                setMessage(null);
+                try {
+                  await vaultApi.enableBiometricUnlock();
+                  setBioEnabled(true);
+                  setMessage(
+                    "Biometric Vault Unlock enabled! Your Master Password is sealed with ChaCha20-Poly1305 and gated by OS biometrics."
+                  );
+                } catch (err) {
+                  setError(String(err));
+                }
+              }}
+              className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-xs text-emerald-200 font-semibold flex items-center gap-2 transition"
+            >
+              <Fingerprint className="w-4 h-4" />
+              Bind Biometrics to This Vault
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={async () => {
+                setError(null);
+                setMessage(null);
+                try {
+                  await vaultApi.disableBiometricUnlock();
+                  setBioEnabled(false);
+                  setMessage("Biometric keyslot wiped and revoked for this vault.");
+                } catch (err) {
+                  setError(String(err));
+                }
+              }}
+              className="px-4 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs text-rose-200 font-semibold flex items-center gap-2 transition"
+            >
+              Revoke &amp; Wipe Biometric Keyslot
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Backup & Keyfile Tools */}
       <div className="cyber-panel rounded-2xl p-5 space-y-3">

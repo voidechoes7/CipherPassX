@@ -1,0 +1,9 @@
+{
+  "identifier": "mobile-biometric",
+  "description": "Native OS biometric authentication (Android BiometricPrompt & iOS Face ID / Touch ID) for vault decryption",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": [
+    "biometric:default"
+  ]
+}
