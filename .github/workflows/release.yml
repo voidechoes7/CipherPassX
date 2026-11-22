@@ -81,8 +81,9 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - name: Initialize, apply Logo 1 & build signed Android APK
+      - name: Initialize, apply Holo Quantum Logo & build signed Android APK
         run: |
+          APP_VER=$(node -p "require('./package.json').version")
           npm ci
           npx tauri android init --ci
           npx tauri icon src-tauri/icons/app-icon-source.png
@@ -109,6 +110,7 @@ jobs:
             -keypass "CipherPassAutoSign2026" \
             -dname "CN=CipherPass, OU=Security, O=voidechoes7, L=Offline, S=Vault, C=US"
 
+          OUT_APK="dist-apk/CipherPass-v${APP_VER}-android-signed.apk"
           "$BUILD_TOOLS/apksigner" sign \
             --ks dist-apk/cipherpass-release.keystore \
             --ks-key-alias cipherpass \
@@ -117,15 +119,15 @@ jobs:
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            --out dist-apk/CipherPass-v0.1.0-android-signed.apk \
+            --out "$OUT_APK" \
             dist-apk/aligned.apk
 
-          "$BUILD_TOOLS/apksigner" verify --verbose dist-apk/CipherPass-v0.1.0-android-signed.apk
-          ls -lh dist-apk/CipherPass-v0.1.0-android-signed.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose "$OUT_APK"
+          ls -lh "$OUT_APK"
       - uses: actions/upload-artifact@v4
         with:
           name: cipherpass-android-apk
-          path: dist-apk/CipherPass-v0.1.0-android-signed.apk
+          path: dist-apk/CipherPass-v*-android-signed.apk
 
   build-ios:
     name: iOS (.ipa unsigned)
@@ -140,7 +142,7 @@ jobs:
         with:
           targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
-      - name: Install frontend, initialize iOS project & apply Logo 1
+      - name: Install frontend, initialize iOS project & apply Holo Quantum Logo
         run: |
           npm ci
           npm run build
@@ -148,6 +150,7 @@ jobs:
           npx tauri icon src-tauri/icons/app-icon-source.png
       - name: Build unsigned iOS archive & package .ipa
         run: |
+          APP_VER=$(node -p "require('./package.json').version")
           python3 -c '
           p = "src-tauri/gen/apple/cipherpass.xcodeproj/project.pbxproj"
           s = open(p).read()
@@ -165,12 +168,12 @@ jobs:
           mkdir -p src-tauri/gen/apple/build/ipa/Payload
           cp -R "$APP_PATH" src-tauri/gen/apple/build/ipa/Payload/
           cd src-tauri/gen/apple/build/ipa
-          zip -r CipherPass-unsigned.ipa Payload
-          ls -lh CipherPass-unsigned.ipa
+          zip -r "CipherPass-v${APP_VER}-unsigned.ipa" Payload
+          ls -lh "CipherPass-v${APP_VER}-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
           name: cipherpass-ios-unsigned-ipa
-          path: src-tauri/gen/apple/build/ipa/CipherPass-unsigned.ipa
+          path: src-tauri/gen/apple/build/ipa/CipherPass-v*-unsigned.ipa
 
   publish-release:
     name: Publish GitHub Release
@@ -191,11 +194,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          APP_VER=$(node -p "require('./package.json').version")
           TAG="${GITHUB_REF_NAME}"
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
-            TAG="v0.1.0-latest"
+            TAG="v${APP_VER}"
           fi
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" dist-release/* \
             --title "CipherPass $TAG" \
-            --notes "100% Offline Post-Quantum Hardened KeePass KDBX 4 / 4.1 Password Manager (Windows .exe, Android .apk, iOS .ipa unsigned, Linux .deb & .AppImage)."
+            --notes "CipherPass $TAG — 100% Offline Post-Quantum Hardened KeePass KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 Password Manager with Holo Quantum Shield logo, 5 themes, Android SAF storage fix, Master Password generator, and Live 2FA Authenticator."
