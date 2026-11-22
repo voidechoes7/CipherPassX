@@ -7,14 +7,23 @@ import {
   pickSavePqFile,
   vaultApi,
 } from "../api/vaultApi";
+import type { ThemeId } from "../themes";
 import type { CipherAlgorithm, KdfAlgorithm, MlKem1024Keypair, VaultStatus } from "../types";
+import { ThemePicker } from "./ThemePicker";
 
 interface Props {
   status: VaultStatus;
+  theme: ThemeId;
+  onThemeChange: (t: ThemeId) => void;
   onStatusUpdated: (status: VaultStatus) => void;
 }
 
-export const SettingsView: React.FC<Props> = ({ status, onStatusUpdated }) => {
+export const SettingsView: React.FC<Props> = ({
+  status,
+  theme,
+  onThemeChange,
+  onStatusUpdated,
+}) => {
   const [cipher, setCipher] = useState<CipherAlgorithm>(status.cipher ?? "ChaCha20");
   const [kdfAlg, setKdfAlg] = useState<KdfAlgorithm>(status.kdf?.algorithm ?? "Argon2id");
   const [memoryMib, setMemoryMib] = useState(status.kdf?.memory_mib ?? 128);
@@ -107,6 +116,17 @@ export const SettingsView: React.FC<Props> = ({ status, onStatusUpdated }) => {
           {error}
         </div>
       )}
+
+      {/* Visual Theme Gallery */}
+      <div className="cyber-panel rounded-2xl p-5 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Interface Theme</h3>
+          <p className="text-[11px] text-slate-400">
+            Switch instantly between Obsidian Cyber, CipherGenX Carbon Gold, Synthwave, Matrix Ghost, and Arctic Titanium.
+          </p>
+        </div>
+        <ThemePicker theme={theme} onChange={onThemeChange} />
+      </div>
 
       <form onSubmit={handleSave} className="cyber-panel rounded-2xl p-5 space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -44,6 +44,12 @@ export interface HistoryItem {
   modified_at: string;
 }
 
+export interface LocalVaultInfo {
+  name: string;
+  path: string;
+  size_bytes: number;
+}
+
 export interface EntrySummary {
   id: string;
   group_id: string;
@@ -52,6 +58,7 @@ export interface EntrySummary {
   url: string;
   favorite: boolean;
   has_totp: boolean;
+  totp_uri: string | null;
   tags: string[];
   modified_at: string;
 }

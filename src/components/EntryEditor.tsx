@@ -403,7 +403,7 @@ export const EntryEditor: React.FC<Props> = ({
 
         {/* Custom Protected Fields */}
         <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <label className="text-xs font-medium text-slate-300">
               Custom Fields (Protected / Plaintext)
             </label>
@@ -416,6 +416,20 @@ export const EntryEditor: React.FC<Props> = ({
             >
               <Plus className="w-3.5 h-3.5" /> Add Field
             </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {["PIN", "Recovery Code", "Seed Phrase", "SSH Key"].map((tpl) => (
+              <button
+                key={tpl}
+                type="button"
+                onClick={() =>
+                  setCustomFields([...customFields, { key: tpl, value: "", protected: true }])
+                }
+                className="text-[10px] font-mono px-2 py-1 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-300 hover:text-cyan-300 transition"
+              >
+                + {tpl}
+              </button>
+            ))}
           </div>
 
           {customFields.map((cf, idx) => (

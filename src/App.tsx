@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
+  Eraser,
   Folder,
   FolderPlus,
   KeyRound,
@@ -19,17 +20,25 @@ import { AuditView } from "./components/AuditView";
 import { EntryEditor } from "./components/EntryEditor";
 import { GeneratorPanel } from "./components/GeneratorPanel";
 import { SettingsView } from "./components/SettingsView";
+import { ThemePicker } from "./components/ThemePicker";
+import { TotpBadge } from "./components/TotpBadge";
 import { UnlockScreen } from "./components/UnlockScreen";
+import { applyTheme, loadSavedTheme, type ThemeId } from "./themes";
 import type { EntryDetail, EntrySummary, GroupNode, VaultStatus } from "./types";
 
 type ActiveTab = "vault" | "totp" | "generator" | "audit" | "settings";
 
 export const App: React.FC = () => {
+  const [theme, setTheme] = useState<ThemeId>(() => loadSavedTheme());
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [groups, setGroups] = useState<GroupNode | null>(null);
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<EntryDetail | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("vault");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -165,6 +174,8 @@ export const App: React.FC = () => {
   if (!status || !status.unlocked) {
     return (
       <UnlockScreen
+        theme={theme}
+        onThemeChange={setTheme}
         onUnlocked={(s) => {
           setStatus(s);
           setActiveTab("vault");
@@ -231,11 +242,27 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <span className="hidden md:flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
             <WifiOff className="w-3 h-3" />
             OFFLINE
           </span>
+          <ThemePicker theme={theme} onChange={setTheme} compact />
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await vaultApi.clearClipboardNow();
+                showToast("Clipboard wiped immediately.");
+              } catch {
+                showToast("Clipboard cleared.");
+              }
+            }}
+            className="p-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-cyan-300 transition"
+            title="Panic Wipe Clipboard Now"
+          >
+            <Eraser className="w-3.5 h-3.5" />
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -243,7 +270,7 @@ export const App: React.FC = () => {
               setSelectedEntry(null);
               setCreatingNew(true);
             }}
-            className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs flex items-center gap-1.5 transition"
+            className="px-2.5 sm:px-3 py-1.5 rounded-lg cyber-btn-primary font-bold text-xs flex items-center gap-1.5 transition"
           >
             <Plus className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">New Entry</span>
@@ -251,7 +278,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleLock}
-            className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1.5 transition"
+            className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1.5 transition"
             title="Lock vault & zeroize RAM"
           >
             <Lock className="w-3.5 h-3.5" />
@@ -399,7 +426,60 @@ export const App: React.FC = () => {
           </main>
         ) : activeTab === "settings" ? (
           <main className="flex-1 overflow-y-auto">
-            <SettingsView status={status} onStatusUpdated={setStatus} />
+            <SettingsView
+              status={status}
+              theme={theme}
+              onThemeChange={setTheme}
+              onStatusUpdated={setStatus}
+            />
+          </main>
+        ) : activeTab === "totp" && !showingEditorMobile ? (
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+            <div className="max-w-4xl mx-auto space-y-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                    <ShieldCheck className="w-5 h-5 cyber-accent-text" />
+                    Offline 2FA / TOTP Authenticator
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Live RFC 6238 tokens synced to your local device clock — zero cloud required.
+                  </p>
+                </div>
+              </div>
+              {entries.length === 0 ? (
+                <div className="cyber-panel rounded-2xl p-8 text-center text-xs text-slate-400 space-y-2">
+                  <p>No 2FA/TOTP tokens configured yet.</p>
+                  <p className="text-slate-500">
+                    Open any entry and paste an <code className="text-cyan-300">otpauth://</code> URI or Base32 secret.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {entries.map((item) => (
+                    <div key={item.id} className="cyber-panel rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectEntry(item.id)}
+                          className="text-left min-w-0 hover:underline"
+                        >
+                          <div className="text-sm font-semibold text-white truncate">
+                            {item.title}
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-400 truncate">
+                            {item.username || "—"}
+                          </div>
+                        </button>
+                      </div>
+                      {item.totp_uri && (
+                        <TotpBadge uriOrSecret={item.totp_uri} onCopy={handleCopy} compact />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </main>
         ) : (
           <div className="flex-1 flex min-w-0 overflow-hidden">

@@ -11,6 +11,7 @@ import type {
   GroupNode,
   KdfAlgorithm,
   KdfConfig,
+  LocalVaultInfo,
   MlKem1024Keypair,
   PassphraseGenOptions,
   PasswordGenOptions,
@@ -60,6 +61,9 @@ export async function pickSaveKeyfile(defaultName = "CipherPass.keyx"): Promise<
 }
 
 export const vaultApi = {
+  getDefaultVaultDir: () => invoke<string>("get_default_vault_dir"),
+  listLocalVaults: () => invoke<LocalVaultInfo[]>("list_local_vaults"),
+  clearClipboardNow: () => invoke<void>("clear_clipboard_now"),
   getStatus: () => invoke<VaultStatus>("get_vault_status"),
 
   createVault: (req: {
