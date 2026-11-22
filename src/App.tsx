@@ -213,8 +213,8 @@ export const App: React.FC = () => {
       {/* Top Bar */}
       <header className="h-14 px-4 border-b border-slate-800/90 bg-[#0D111A] flex items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-center shrink-0">
-            <Shield className="w-4 h-4 text-cyan-400" />
+          <div className="w-9 h-9 rounded-lg overflow-hidden border border-cyan-400/35 shrink-0 bg-[#07090F]">
+            <img src="/logo.png" alt="CipherPass" className="w-full h-full object-cover" />
           </div>
           <div className="min-w-0">
             <div className="text-sm font-bold text-white truncate">

@@ -7,7 +7,6 @@ import {
   FolderOpen,
   Lock,
   PlusCircle,
-  Shield,
   Sparkles,
   WifiOff,
 } from "lucide-react";
@@ -128,8 +127,8 @@ export const UnlockScreen: React.FC<Props> = ({ onUnlocked }) => {
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-400/30 flex items-center justify-center cyber-glow">
-              <Shield className="w-6 h-6 text-cyan-400" />
+            <div className="w-13 h-13 rounded-xl overflow-hidden border border-cyan-400/40 cyber-glow shrink-0 bg-[#07090F]">
+              <img src="/logo.png" alt="CipherPass" className="w-full h-full object-cover" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">

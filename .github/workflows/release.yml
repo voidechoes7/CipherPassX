@@ -81,15 +81,51 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - name: Initialize & build Android APK
+      - name: Initialize, apply Logo 1 & build signed Android APK
         run: |
           npm ci
           npx tauri android init --ci
+          npx tauri icon src-tauri/icons/app-icon-source.png
           npx tauri android build --apk --target aarch64
+
+          UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "ERROR: Unsigned APK not found!"
+            exit 1
+          fi
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
+          mkdir -p dist-apk
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" dist-apk/aligned.apk
+
+          keytool -genkeypair -v \
+            -keystore dist-apk/cipherpass-release.keystore \
+            -storetype PKCS12 \
+            -alias cipherpass \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 10000 \
+            -storepass "CipherPassAutoSign2026" \
+            -keypass "CipherPassAutoSign2026" \
+            -dname "CN=CipherPass, OU=Security, O=voidechoes7, L=Offline, S=Vault, C=US"
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks dist-apk/cipherpass-release.keystore \
+            --ks-key-alias cipherpass \
+            --ks-pass pass:CipherPassAutoSign2026 \
+            --key-pass pass:CipherPassAutoSign2026 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out dist-apk/CipherPass-v0.1.0-android-signed.apk \
+            dist-apk/aligned.apk
+
+          "$BUILD_TOOLS/apksigner" verify --verbose dist-apk/CipherPass-v0.1.0-android-signed.apk
+          ls -lh dist-apk/CipherPass-v0.1.0-android-signed.apk
       - uses: actions/upload-artifact@v4
         with:
           name: cipherpass-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: dist-apk/CipherPass-v0.1.0-android-signed.apk
 
   build-ios:
     name: iOS (.ipa unsigned)
@@ -104,11 +140,12 @@ jobs:
         with:
           targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
-      - name: Install frontend & initialize iOS project
+      - name: Install frontend, initialize iOS project & apply Logo 1
         run: |
           npm ci
           npm run build
           npx tauri ios init --ci
+          npx tauri icon src-tauri/icons/app-icon-source.png
       - name: Build unsigned iOS archive & package .ipa
         run: |
           python3 -c '
