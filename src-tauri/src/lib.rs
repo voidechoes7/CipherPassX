@@ -513,12 +513,18 @@ fn create_vault(
     };
     kdf.validate_safe_floor().map_err(|e| e.to_string())?;
 
-    let keyfile_bytes = match req.keyfile_path {
-        Some(ref p) if !p.trim().is_empty() => {
+    let saved_kf_path = req
+        .keyfile_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let keyfile_bytes = match saved_kf_path {
+        Some(ref p) => {
             let kf_loc = resolve_location(&app, p, ".keyx")?;
             Some(read_bytes_from_location(&app, &kf_loc)?)
         }
-        _ => None,
+        None => None,
     };
 
     let credentials =
@@ -535,6 +541,7 @@ fn create_vault(
         *sess_guard = Some(UnlockedSession {
             vault,
             credentials,
+            keyfile_path: saved_kf_path,
             location,
             last_activity: Instant::now(),
             dirty: false,
@@ -556,12 +563,18 @@ fn open_vault(
         std::thread::sleep(Duration::from_secs(backoff_secs));
     }
 
-    let keyfile_bytes = match req.keyfile_path {
-        Some(ref p) if !p.trim().is_empty() => {
+    let saved_kf_path = req
+        .keyfile_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let keyfile_bytes = match saved_kf_path {
+        Some(ref p) => {
             let kf_loc = resolve_location(&app, p, ".keyx")?;
             Some(read_bytes_from_location(&app, &kf_loc)?)
         }
-        _ => None,
+        None => None,
     };
 
     let credentials =
@@ -587,6 +600,7 @@ fn open_vault(
         *sess_guard = Some(UnlockedSession {
             vault,
             credentials,
+            keyfile_path: saved_kf_path,
             location,
             last_activity: Instant::now(),
             dirty: false,
@@ -1124,6 +1138,8 @@ fn enable_biometric_unlock(
                     title: Some("Enable Biometric Vault Unlock".to_string()),
                     subtitle: Some("Seal KDBX 4 credentials with ChaCha20-Poly1305".to_string()),
                     confirmation_required: Some(true),
+                    data_to_encrypt: None,
+                    data_to_decrypt: None,
                 },
             )
             .map_err(|e| format!("Biometric verification failed: {e}"))?;
@@ -1206,6 +1222,8 @@ fn unlock_vault_biometric(
                     title: Some("CipherPass Biometric Unlock".to_string()),
                     subtitle: Some("Decrypt bound KDBX 4 Master Key".to_string()),
                     confirmation_required: Some(true),
+                    data_to_encrypt: None,
+                    data_to_decrypt: None,
                 },
             )
             .map_err(|e| format!("Biometric authentication failed: {e}"))?;
