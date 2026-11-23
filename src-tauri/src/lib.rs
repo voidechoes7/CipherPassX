@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use cipherpass_core::crypto::random_bytes;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use cipherpass_core::unseal_biometric_slot;
 use cipherpass_core::{
     atomic_write_file, evaluate_password, generate_keyfile_v2_xml, generate_mlkem1024_keypair,
     generate_passphrase, generate_password, generate_totp_now, open_kdbx_bytes, pq_seal_bytes,
-    pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, seal_biometric_slot, unseal_biometric_slot,
-    vault_slot_id, BiometricVaultCredentials, CipherAlgorithm, CustomField, EntropyReport,
-    GeneratedSecret, KdfAlgorithm, KdfConfig, MasterCredentials, MlKem1024Keypair,
-    PassphraseGenOptions, PasswordGenOptions, ProtectedString, SecurityAuditReport, TotpCode,
-    Vault, VaultEntry, VaultGroup,
+    pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, seal_biometric_slot, vault_slot_id,
+    BiometricVaultCredentials, CipherAlgorithm, CustomField, EntropyReport, GeneratedSecret,
+    KdfAlgorithm, KdfConfig, MasterCredentials, MlKem1024Keypair, PassphraseGenOptions,
+    PasswordGenOptions, ProtectedString, SecurityAuditReport, TotpCode, Vault, VaultEntry,
+    VaultGroup,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -226,8 +228,7 @@ fn biometric_slot_path(app: &AppHandle, canonical_path: &str) -> Result<PathBuf,
 }
 
 fn test_dir_writable(dir: &Path) -> bool {
-    let nonce = random_bytes::<6>();
-    let probe = dir.join(format!(".cp_probe_{}", hex::encode(nonce)));
+    let probe = dir.join(format!(".cp_probe_{}", Uuid::new_v4().simple()));
     match fs::OpenOptions::new()
         .create_new(true)
         .write(true)
