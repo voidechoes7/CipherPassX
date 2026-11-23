@@ -82,14 +82,19 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
       - name: Initialize, harden Android manifest/theme, apply Logo & build signed APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           APP_VER=$(node -p "require('./package.json').version")
           npm ci
           npx tauri android init --ci
           npx tauri icon src-tauri/icons/app-icon-source.png
 
-          python3 - <<'PYEOF'
-          import glob, os
+          APP_VER="$APP_VER" python3 - <<'PYEOF'
+          import glob, os, re
 
           # 1. Harden AndroidManifest.xml (biometrics, all-folder storage, allowBackup=false, adjustResize)
           manifest = "src-tauri/gen/android/app/src/main/AndroidManifest.xml"
@@ -125,6 +130,24 @@ jobs:
                   t = t.replace("</style>", items + "\n    </style>", 1)
                   open(theme_file, "w", encoding="utf-8").write(t)
                   print("Patched theme:", theme_file)
+
+          # 3. Set deterministic monotonic versionCode (major*10000 + minor*100 + patch) for in-place updates
+          ver = os.environ["APP_VER"].split("-")[0]
+          parts = [int(x) for x in ver.split(".")[:3]]
+          while len(parts) < 3:
+              parts.append(0)
+          ver_code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+          tauri_props = "src-tauri/gen/android/app/tauri.properties"
+          if os.path.exists(tauri_props):
+              tp = open(tauri_props, "r", encoding="utf-8").read()
+              if "tauri.android.versionCode=" in tp:
+                  tp = re.sub(r"tauri\.android\.versionCode=\d+", f"tauri.android.versionCode={ver_code}", tp)
+              else:
+                  tp += f"\ntauri.android.versionCode={ver_code}\n"
+              if "tauri.android.versionName=" in tp:
+                  tp = re.sub(r"tauri\.android\.versionName=.*", f"tauri.android.versionName={ver}", tp)
+              open(tauri_props, "w", encoding="utf-8").write(tp)
+              print(f"Patched tauri.properties: versionCode={ver_code}, versionName={ver}")
           PYEOF
 
           npx tauri android build --apk --target aarch64
@@ -135,33 +158,30 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_BASE64 secret is missing!"
+            exit 1
+          fi
+
           BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
           mkdir -p dist-apk
           "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" dist-apk/aligned.apk
 
-          keytool -genkeypair -v \
-            -keystore dist-apk/cipherpass-release.keystore \
-            -storetype PKCS12 \
-            -alias cipherpass \
-            -keyalg RSA \
-            -keysize 4096 \
-            -validity 10000 \
-            -storepass "CipherPassAutoSign2026" \
-            -keypass "CipherPassAutoSign2026" \
-            -dname "CN=CipherPass, OU=Security, O=voidechoes7, L=Offline, S=Vault, C=US"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > dist-apk/cipherpass-release.keystore
 
           OUT_APK="dist-apk/CipherPass-v${APP_VER}-android-signed.apk"
           "$BUILD_TOOLS/apksigner" sign \
             --ks dist-apk/cipherpass-release.keystore \
-            --ks-key-alias cipherpass \
-            --ks-pass pass:CipherPassAutoSign2026 \
-            --key-pass pass:CipherPassAutoSign2026 \
+            --ks-key-alias "${ANDROID_KEY_ALIAS:-cipherpass}" \
+            --ks-pass "env:ANDROID_KEYSTORE_PASSWORD" \
+            --key-pass "env:ANDROID_KEY_PASSWORD" \
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
             --out "$OUT_APK" \
             dist-apk/aligned.apk
 
+          rm -f dist-apk/cipherpass-release.keystore
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$OUT_APK"
           ls -lh "$OUT_APK"
       - uses: actions/upload-artifact@v4
