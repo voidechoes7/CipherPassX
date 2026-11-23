@@ -81,12 +81,52 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - name: Initialize, apply Holo Quantum Logo & build signed Android APK
+      - name: Initialize, harden Android manifest/theme, apply Logo & build signed APK
         run: |
           APP_VER=$(node -p "require('./package.json').version")
           npm ci
           npx tauri android init --ci
           npx tauri icon src-tauri/icons/app-icon-source.png
+
+          python3 - <<'PYEOF'
+          import glob, os
+
+          # 1. Harden AndroidManifest.xml (biometrics, all-folder storage, allowBackup=false, adjustResize)
+          manifest = "src-tauri/gen/android/app/src/main/AndroidManifest.xml"
+          m = open(manifest, "r", encoding="utf-8").read()
+          perms = [
+              '<uses-permission android:name="android.permission.USE_BIOMETRIC" />',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
+              '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
+              '<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />',
+          ]
+          inject_perms = "\n    ".join(p for p in perms if p not in m)
+          if inject_perms:
+              m = m.replace("<application", f"    {inject_perms}\n    <application", 1)
+          if 'android:allowBackup=' not in m:
+              m = m.replace("<application", '<application android:allowBackup="false" android:requestLegacyExternalStorage="true"', 1)
+          else:
+              m = m.replace('android:allowBackup="true"', 'android:allowBackup="false" android:requestLegacyExternalStorage="true"')
+          if 'android:windowSoftInputMode=' not in m:
+              m = m.replace("<activity", '<activity android:windowSoftInputMode="adjustResize"', 1)
+          open(manifest, "w", encoding="utf-8").write(m)
+          print("Patched AndroidManifest.xml successfully")
+
+          # 2. Style Android status/nav bars to Obsidian #07090F with crisp white icons
+          for theme_file in glob.glob("src-tauri/gen/android/app/src/main/res/values*/themes.xml"):
+              t = open(theme_file, "r", encoding="utf-8").read()
+              items = """
+                  <item name="android:statusBarColor">#07090F</item>
+                  <item name="android:navigationBarColor">#07090F</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:windowBackground">#07090F</item>
+              """
+              if "statusBarColor" not in t and "</style>" in t:
+                  t = t.replace("</style>", items + "\n    </style>", 1)
+                  open(theme_file, "w", encoding="utf-8").write(t)
+                  print("Patched theme:", theme_file)
+          PYEOF
+
           npx tauri android build --apk --target aarch64
 
           UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
@@ -122,7 +162,7 @@ jobs:
             --out "$OUT_APK" \
             dist-apk/aligned.apk
 
-          "$BUILD_TOOLS/apksigner" verify --verbose "$OUT_APK"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$OUT_APK"
           ls -lh "$OUT_APK"
       - uses: actions/upload-artifact@v4
         with:
@@ -190,11 +230,13 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Flatten release assets
+      - name: Flatten release assets & generate SHA256SUMS.txt
         run: |
           mkdir -p dist-release
           find release-assets -type f \( -name "*.exe" -o -name "*.apk" -o -name "*.ipa" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist-release/ \;
-          ls -la dist-release
+          (cd dist-release && sha256sum * > SHA256SUMS.txt)
+          cat dist-release/SHA256SUMS.txt
+          ls -lh dist-release
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -207,4 +249,4 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" dist-release/* \
             --title "CipherPass $TAG" \
-            --notes "CipherPass $TAG — 100% Offline Post-Quantum Hardened KeePass KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 Password Manager with Holo Quantum Shield logo, 5 themes, Android SAF storage fix, Master Password generator, and Live 2FA Authenticator."
+            --notes "CipherPass $TAG — 100% Offline KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 Password Manager. Includes In-App Folder Browser & Move Vault (any phone/PC folder), fixed Android safe-area alignment & dark status bar, non-blocking Argon2id, Biometric Vault Unlock bound to Master Key, structured Entry Editor templates, Mobile Folder Pills, 1-tap Quick-Copy, and SHA256SUMS.txt integrity verification."

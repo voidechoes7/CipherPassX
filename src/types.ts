@@ -50,6 +50,20 @@ export interface LocalVaultInfo {
   size_bytes: number;
 }
 
+export interface StorageRoot {
+  label: string;
+  path: string;
+  writable: boolean;
+}
+
+export interface FolderListing {
+  current_path: string;
+  parent_path: string | null;
+  writable: boolean;
+  folders: string[];
+  error: string | null;
+}
+
 export interface EntrySummary {
   id: string;
   group_id: string;

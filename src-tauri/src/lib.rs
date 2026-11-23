@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -52,6 +52,50 @@ fn default_vaults_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn recent_vaults_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve app_local_data_dir: {e}"))?;
+    fs::create_dir_all(&base).map_err(|e| format!("Failed to create app data dir: {e}"))?;
+    Ok(base.join("recent_vaults.json"))
+}
+
+fn record_recent_vault(app: &AppHandle, name: &str, path: &str) {
+    let Ok(reg_path) = recent_vaults_file(app) else {
+        return;
+    };
+    let mut items: Vec<LocalVaultInfo> = fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let display_name = if name.trim().is_empty() {
+        Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Vault.kdbx")
+            .to_string()
+    } else {
+        name.trim().to_string()
+    };
+
+    items.retain(|i| i.path != path);
+    let size_bytes = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    items.insert(
+        0,
+        LocalVaultInfo {
+            name: display_name,
+            path: path.to_string(),
+            size_bytes,
+        },
+    );
+    items.truncate(12);
+    if let Ok(json) = serde_json::to_vec_pretty(&items) {
+        let _ = atomic_write_file(&reg_path, &json);
+    }
+}
+
 fn resolve_location(
     app: &AppHandle,
     raw: &str,
@@ -77,11 +121,10 @@ fn resolve_location(
     }
 
     let path = PathBuf::from(trimmed);
-    // If bare filename or relative path (or root-level path on mobile), place safely inside writable app vaults dir.
     let needs_local_dir = !path.is_absolute()
         || path
             .parent()
-            .is_none_or(|p| p.as_os_str().is_empty() || p == std::path::Path::new("/"));
+            .is_none_or(|p| p.as_os_str().is_empty() || p == Path::new("/"));
 
     if needs_local_dir {
         let dir = default_vaults_dir(app)?;
@@ -182,6 +225,22 @@ fn biometric_slot_path(app: &AppHandle, canonical_path: &str) -> Result<PathBuf,
     Ok(keystore_dir(app)?.join(format!("{id}.bio")))
 }
 
+fn test_dir_writable(dir: &Path) -> bool {
+    let nonce = random_bytes::<6>();
+    let probe = dir.join(format!(".cp_probe_{}", hex::encode(nonce)));
+    match fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 struct UnlockedSession {
     vault: Vault,
     credentials: MasterCredentials,
@@ -234,6 +293,22 @@ pub struct LocalVaultInfo {
     pub name: String,
     pub path: String,
     pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageRootDto {
+    pub label: String,
+    pub path: String,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderListingDto {
+    pub current_path: String,
+    pub parent_path: Option<String>,
+    pub writable: bool,
+    pub folders: Vec<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,9 +538,156 @@ fn get_default_vault_dir(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_storage_roots(app: AppHandle) -> Result<Vec<StorageRootDto>, String> {
+    let mut roots = Vec::new();
+
+    if let Ok(app_dir) = default_vaults_dir(&app) {
+        roots.push(StorageRootDto {
+            label: "App Private Vaults (Recommended)".to_string(),
+            path: app_dir.to_string_lossy().to_string(),
+            writable: test_dir_writable(&app_dir),
+        });
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        for (label, p) in [
+            (
+                "Internal Storage (/storage/emulated/0)",
+                "/storage/emulated/0",
+            ),
+            ("Documents", "/storage/emulated/0/Documents"),
+            ("Download", "/storage/emulated/0/Download"),
+        ] {
+            let pb = PathBuf::from(p);
+            if pb.exists() {
+                roots.push(StorageRootDto {
+                    label: label.to_string(),
+                    path: p.to_string(),
+                    writable: test_dir_writable(&pb),
+                });
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Ok(doc) = app.path().document_dir() {
+            if doc.exists() {
+                roots.push(StorageRootDto {
+                    label: "Documents".to_string(),
+                    path: doc.to_string_lossy().to_string(),
+                    writable: test_dir_writable(&doc),
+                });
+            }
+        }
+        if let Ok(dl) = app.path().download_dir() {
+            if dl.exists() {
+                roots.push(StorageRootDto {
+                    label: "Downloads".to_string(),
+                    path: dl.to_string_lossy().to_string(),
+                    writable: test_dir_writable(&dl),
+                });
+            }
+        }
+        if let Ok(home) = app.path().home_dir() {
+            if home.exists() {
+                roots.push(StorageRootDto {
+                    label: "Home Folder".to_string(),
+                    path: home.to_string_lossy().to_string(),
+                    writable: test_dir_writable(&home),
+                });
+            }
+        }
+    }
+
+    Ok(roots)
+}
+
+#[tauri::command]
+fn list_directory_folders(path: String) -> FolderListingDto {
+    let pb = PathBuf::from(path.trim());
+    let parent_path = pb.parent().and_then(|p| {
+        let s = p.to_string_lossy().to_string();
+        if s.is_empty() || s == path.trim() {
+            None
+        } else {
+            Some(s)
+        }
+    });
+
+    let writable = test_dir_writable(&pb);
+    match fs::read_dir(&pb) {
+        Ok(rd) => {
+            let mut folders = Vec::new();
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        if !name.starts_with('.') {
+                            folders.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            folders.sort_by_key(|a| a.to_lowercase());
+            FolderListingDto {
+                current_path: pb.to_string_lossy().to_string(),
+                parent_path,
+                writable,
+                folders,
+                error: None,
+            }
+        }
+        Err(e) => FolderListingDto {
+            current_path: pb.to_string_lossy().to_string(),
+            parent_path,
+            writable,
+            folders: Vec::new(),
+            error: Some(format!(
+                "Cannot list this folder ({e}). On Android 11+, grant 'All files access' to CipherPass in Android Settings or use 'System Save As'."
+            )),
+        },
+    }
+}
+
+#[tauri::command]
+fn create_directory(parent_path: String, folder_name: String) -> Result<String, String> {
+    let clean = folder_name
+        .trim()
+        .replace(['/', '\\'], "")
+        .trim_matches('.')
+        .to_string();
+    if clean.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    let target = PathBuf::from(parent_path.trim()).join(&clean);
+    fs::create_dir_all(&target).map_err(|e| format!("Failed to create folder: {e}"))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn list_local_vaults(app: AppHandle) -> Result<Vec<LocalVaultInfo>, String> {
-    let dir = default_vaults_dir(&app)?;
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // 1. Recent vaults (any folder on phone/PC or content:// URI)
+    if let Ok(reg_path) = recent_vaults_file(&app) {
+        if let Ok(raw) = fs::read_to_string(&reg_path) {
+            if let Ok(recent) = serde_json::from_str::<Vec<LocalVaultInfo>>(&raw) {
+                for item in recent {
+                    let exists =
+                        item.path.starts_with("content://") || Path::new(&item.path).exists();
+                    if exists && seen.insert(item.path.clone()) {
+                        out.push(item);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Vaults in app private vaults folder
+    let dir = default_vaults_dir(&app)?;
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -475,21 +697,23 @@ fn list_local_vaults(app: AppHandle) -> Result<Vec<LocalVaultInfo>, String> {
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("kdbx"))
             {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("vault.kdbx")
-                    .to_string();
-                let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                out.push(LocalVaultInfo {
-                    name,
-                    path: path.to_string_lossy().to_string(),
-                    size_bytes,
-                });
+                let path_str = path.to_string_lossy().to_string();
+                if seen.insert(path_str.clone()) {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("vault.kdbx")
+                        .to_string();
+                    let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    out.push(LocalVaultInfo {
+                        name,
+                        path: path_str,
+                        size_bytes,
+                    });
+                }
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
 }
 
@@ -499,7 +723,7 @@ fn get_vault_status(state: State<'_, Arc<SharedState>>) -> Result<VaultStatusDto
 }
 
 #[tauri::command]
-fn create_vault(
+async fn create_vault(
     req: CreateVaultRequest,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
@@ -532,9 +756,21 @@ fn create_vault(
             .map_err(|e| e.to_string())?;
 
     let location = resolve_location(&app, &req.path, ".kdbx")?;
-    let vault = Vault::new(req.database_name, req.cipher, kdf);
-    let bytes = Zeroizing::new(save_kdbx_bytes(&vault, &credentials).map_err(|e| e.to_string())?);
+    let db_name = req.database_name.clone();
+    let cipher = req.cipher;
+
+    // Run Argon2id + KDBX 4 encryption off the UI thread to prevent Android ANRs
+    let (vault, credentials, bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let vault = Vault::new(db_name, cipher, kdf);
+        let bytes =
+            Zeroizing::new(save_kdbx_bytes(&vault, &credentials).map_err(|e| e.to_string())?);
+        Ok::<_, String>((vault, credentials, bytes))
+    })
+    .await
+    .map_err(|e| format!("Background crypto task failed: {e}"))??;
+
     write_bytes_to_location(&app, &location, bytes.as_slice())?;
+    record_recent_vault(&app, &vault.meta.database_name, &location.display_string());
 
     {
         let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
@@ -552,7 +788,7 @@ fn create_vault(
 }
 
 #[tauri::command]
-fn open_vault(
+async fn open_vault(
     req: OpenVaultRequest,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
@@ -560,7 +796,11 @@ fn open_vault(
     let failures = state.failed_unlock_attempts.load(Ordering::SeqCst);
     if failures > 0 {
         let backoff_secs = (1u64 << (failures.saturating_sub(1).min(4))).min(15);
-        std::thread::sleep(Duration::from_secs(backoff_secs));
+        tauri::async_runtime::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_secs(backoff_secs));
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     let saved_kf_path = req
@@ -584,16 +824,25 @@ fn open_vault(
     let location = resolve_location(&app, &req.path, ".kdbx")?;
     let raw_bytes = read_bytes_from_location(&app, &location)?;
 
-    let vault = match open_kdbx_bytes(&raw_bytes, &credentials) {
-        Ok(v) => {
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let vault = open_kdbx_bytes(&raw_bytes, &credentials).map_err(|e| e.to_string())?;
+        Ok::<_, String>((vault, credentials))
+    })
+    .await
+    .map_err(|e| format!("Background crypto task failed: {e}"))?;
+
+    let (vault, credentials) = match res {
+        Ok(pair) => {
             state.failed_unlock_attempts.store(0, Ordering::SeqCst);
-            v
+            pair
         }
         Err(e) => {
             state.failed_unlock_attempts.fetch_add(1, Ordering::SeqCst);
-            return Err(e.to_string());
+            return Err(e);
         }
     };
+
+    record_recent_vault(&app, &vault.meta.database_name, &location.display_string());
 
     {
         let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
@@ -639,6 +888,54 @@ fn save_vault(
         sess.touch();
         persist_session(&app, sess)?;
     }
+    build_status(&state)
+}
+
+#[tauri::command]
+fn move_vault_to_path(
+    dest_path: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<VaultStatusDto, String> {
+    let new_loc = resolve_location(&app, &dest_path, ".kdbx")?;
+    let new_canonical = new_loc.display_string();
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+
+        let old_canonical = sess.location.display_string();
+        let bytes = Zeroizing::new(
+            save_kdbx_bytes(&sess.vault, &sess.credentials).map_err(|e| e.to_string())?,
+        );
+        write_bytes_to_location(&app, &new_loc, bytes.as_slice())?;
+
+        // Re-bind biometric slot if one existed for the old path
+        if let Ok(old_slot) = biometric_slot_path(&app, &old_canonical) {
+            if old_slot.exists() {
+                let bio_creds = BiometricVaultCredentials {
+                    master_password: sess.credentials.password.clone(),
+                    keyfile_path: sess.keyfile_path.clone(),
+                };
+                if let Ok(device_secret) = load_or_create_device_secret(&app) {
+                    let new_id = vault_slot_id(&new_canonical);
+                    if let Ok(sealed) = seal_biometric_slot(&bio_creds, &device_secret, &new_id) {
+                        if let Ok(new_slot) = biometric_slot_path(&app, &new_canonical) {
+                            let _ = atomic_write_file(&new_slot, &sealed);
+                        }
+                    }
+                }
+            }
+        }
+
+        sess.location = new_loc;
+        sess.dirty = false;
+        record_recent_vault(&app, &sess.vault.meta.database_name, &new_canonical);
+    }
+
     build_status(&state)
 }
 
@@ -778,6 +1075,29 @@ fn get_entry(
         .find_entry(uuid)
         .ok_or_else(|| "Entry not found".to_string())?;
     Ok(entry_to_detail(gid, entry))
+}
+
+#[tauri::command]
+fn copy_entry_password(
+    entry_id: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<u64, String> {
+    let uuid = Uuid::parse_str(&entry_id).map_err(|e| e.to_string())?;
+    let secret = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+        let (_, entry) = sess
+            .vault
+            .root_group
+            .find_entry(uuid)
+            .ok_or_else(|| "Entry not found".to_string())?;
+        Zeroizing::new(entry.password.expose().to_string())
+    };
+    copy_secret_with_auto_clear(secret.to_string(), None, app, state)
 }
 
 #[tauri::command]
@@ -1002,7 +1322,7 @@ fn clear_clipboard_now(app: AppHandle, state: State<'_, Arc<SharedState>>) -> Re
 }
 
 #[tauri::command]
-fn update_security_settings(
+async fn update_security_settings(
     req: SecuritySettingsRequest,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
@@ -1018,21 +1338,41 @@ fn update_security_settings(
     }
 
     if req.cipher.is_some() || req.kdf.is_some() {
-        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
-        let sess = sess_guard
-            .as_mut()
-            .ok_or_else(|| "Vault must be unlocked to change cipher or KDF".to_string())?;
-        sess.touch();
+        let (vault_clone, creds_clone, loc_clone) = {
+            let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+            let sess = sess_guard
+                .as_mut()
+                .ok_or_else(|| "Vault must be unlocked to change cipher or KDF".to_string())?;
+            sess.touch();
 
-        if let Some(kdf) = req.kdf {
-            kdf.validate_safe_floor().map_err(|e| e.to_string())?;
-            sess.vault.kdf = kdf;
-        }
-        if let Some(cipher) = req.cipher {
-            sess.vault.cipher = cipher;
-        }
+            if let Some(kdf) = req.kdf {
+                kdf.validate_safe_floor().map_err(|e| e.to_string())?;
+                sess.vault.kdf = kdf;
+            }
+            if let Some(cipher) = req.cipher {
+                sess.vault.cipher = cipher;
+            }
+            let creds_copy = MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            };
+            (sess.vault.clone(), creds_copy, sess.location.clone())
+        };
 
-        persist_session(&app, sess)?;
+        let bytes = tauri::async_runtime::spawn_blocking(move || {
+            let raw = save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?;
+            Ok::<_, String>(Zeroizing::new(raw))
+        })
+        .await
+        .map_err(|e| format!("Background re-encryption failed: {e}"))??;
+
+        write_bytes_to_location(&app, &loc_clone, bytes.as_slice())?;
+
+        if let Ok(mut sess_guard) = state.session.lock() {
+            if let Some(ref mut sess) = *sess_guard {
+                sess.dirty = false;
+            }
+        }
     }
 
     build_status(&state)
@@ -1115,9 +1455,18 @@ fn unseal_pq_armored_vault(
 
 #[tauri::command]
 fn has_biometric_slot(path: String, app: AppHandle) -> Result<bool, String> {
-    let loc = resolve_location(&app, &path, ".kdbx")?;
-    let slot_path = biometric_slot_path(&app, &loc.display_string())?;
-    Ok(slot_path.exists())
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (path, app);
+        return Ok(false);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let loc = resolve_location(&app, &path, ".kdbx")?;
+        let slot_path = biometric_slot_path(&app, &loc.display_string())?;
+        Ok(slot_path.exists())
+    }
 }
 
 #[tauri::command]
@@ -1125,6 +1474,15 @@ fn enable_biometric_unlock(
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<bool, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (app, state);
+        return Err(
+            "Biometric Vault Unlock is enforced via native OS BiometricPrompt / Face ID on Android & iOS."
+                .to_string(),
+        );
+    }
+
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         use tauri_plugin_biometric::{AuthOptions, BiometricExt};
@@ -1143,29 +1501,29 @@ fn enable_biometric_unlock(
                 },
             )
             .map_err(|e| format!("Biometric verification failed: {e}"))?;
-    }
 
-    let (canonical, bio_creds) = {
-        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
-        let sess = sess_guard
-            .as_mut()
-            .ok_or_else(|| "Vault must be unlocked first".to_string())?;
-        sess.touch();
-        let canonical = sess.location.display_string();
-        let bio_creds = BiometricVaultCredentials {
-            master_password: sess.credentials.password.clone(),
-            keyfile_path: sess.keyfile_path.clone(),
+        let (canonical, bio_creds) = {
+            let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+            let sess = sess_guard
+                .as_mut()
+                .ok_or_else(|| "Vault must be unlocked first".to_string())?;
+            sess.touch();
+            let canonical = sess.location.display_string();
+            let bio_creds = BiometricVaultCredentials {
+                master_password: sess.credentials.password.clone(),
+                keyfile_path: sess.keyfile_path.clone(),
+            };
+            (canonical, bio_creds)
         };
-        (canonical, bio_creds)
-    };
 
-    let device_secret = load_or_create_device_secret(&app)?;
-    let vault_id = vault_slot_id(&canonical);
-    let sealed =
-        seal_biometric_slot(&bio_creds, &device_secret, &vault_id).map_err(|e| e.to_string())?;
-    let slot_path = biometric_slot_path(&app, &canonical)?;
-    atomic_write_file(&slot_path, &sealed).map_err(|e| e.to_string())?;
-    Ok(true)
+        let device_secret = load_or_create_device_secret(&app)?;
+        let vault_id = vault_slot_id(&canonical);
+        let sealed = seal_biometric_slot(&bio_creds, &device_secret, &vault_id)
+            .map_err(|e| e.to_string())?;
+        let slot_path = biometric_slot_path(&app, &canonical)?;
+        atomic_write_file(&slot_path, &sealed).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
 }
 
 #[tauri::command]
@@ -1184,7 +1542,6 @@ fn disable_biometric_unlock(
 
     let slot_path = biometric_slot_path(&app, &canonical)?;
     if slot_path.exists() {
-        // Overwrite with zeroes before unlinking
         if let Ok(meta) = fs::metadata(&slot_path) {
             let zeros = vec![0u8; meta.len() as usize];
             let _ = fs::write(&slot_path, zeros);
@@ -1195,23 +1552,31 @@ fn disable_biometric_unlock(
 }
 
 #[tauri::command]
-fn unlock_vault_biometric(
+async fn unlock_vault_biometric(
     path: String,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<VaultStatusDto, String> {
-    let location = resolve_location(&app, &path, ".kdbx")?;
-    let canonical = location.display_string();
-    let slot_path = biometric_slot_path(&app, &canonical)?;
-    if !slot_path.exists() {
-        return Err("Biometric unlock is not enabled for this vault".to_string());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (path, app, state);
+        return Err(
+            "Biometric Vault Unlock is only available on Android & iOS devices.".to_string(),
+        );
     }
 
-    // Enforce native OS BiometricPrompt (Android) / Face ID & Touch ID (iOS) in Rust
-    // BEFORE reading or decrypting the ChaCha20-Poly1305 vault keyslot.
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         use tauri_plugin_biometric::{AuthOptions, BiometricExt};
+
+        let location = resolve_location(&app, &path, ".kdbx")?;
+        let canonical = location.display_string();
+        let slot_path = biometric_slot_path(&app, &canonical)?;
+        if !slot_path.exists() {
+            return Err("Biometric unlock is not enabled for this vault".to_string());
+        }
+
+        // Enforce native OS BiometricPrompt / Face ID in Rust BEFORE unsealing keyslot
         app.biometric()
             .authenticate(
                 "Authenticate to decrypt your CipherPass KDBX 4 vault".to_string(),
@@ -1227,47 +1592,55 @@ fn unlock_vault_biometric(
                 },
             )
             .map_err(|e| format!("Biometric authentication failed: {e}"))?;
-    }
 
-    let device_secret = load_or_create_device_secret(&app)?;
-    let vault_id = vault_slot_id(&canonical);
-    let slot_bytes =
-        fs::read(&slot_path).map_err(|e| format!("Failed to read biometric keyslot: {e}"))?;
-    let bio_creds =
-        unseal_biometric_slot(&slot_bytes, &device_secret, &vault_id).map_err(|e| e.to_string())?;
+        let device_secret = load_or_create_device_secret(&app)?;
+        let vault_id = vault_slot_id(&canonical);
+        let slot_bytes =
+            fs::read(&slot_path).map_err(|e| format!("Failed to read biometric keyslot: {e}"))?;
+        let bio_creds = unseal_biometric_slot(&slot_bytes, &device_secret, &vault_id)
+            .map_err(|e| e.to_string())?;
 
-    let saved_kf_path = bio_creds.keyfile_path.clone();
-    let keyfile_bytes = match saved_kf_path {
-        Some(ref p) => {
-            let kf_loc = resolve_location(&app, p, ".keyx")?;
-            Some(read_bytes_from_location(&app, &kf_loc)?)
+        let saved_kf_path = bio_creds.keyfile_path.clone();
+        let keyfile_bytes = match saved_kf_path {
+            Some(ref p) => {
+                let kf_loc = resolve_location(&app, p, ".keyx")?;
+                Some(read_bytes_from_location(&app, &kf_loc)?)
+            }
+            None => None,
+        };
+
+        let credentials = MasterCredentials::from_password_and_keyfile(
+            bio_creds.master_password.clone(),
+            keyfile_bytes,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let raw_bytes = read_bytes_from_location(&app, &location)?;
+
+        let (vault, credentials) = tauri::async_runtime::spawn_blocking(move || {
+            let vault = open_kdbx_bytes(&raw_bytes, &credentials).map_err(|e| e.to_string())?;
+            Ok::<_, String>((vault, credentials))
+        })
+        .await
+        .map_err(|e| format!("Background crypto task failed: {e}"))??;
+
+        state.failed_unlock_attempts.store(0, Ordering::SeqCst);
+        record_recent_vault(&app, &vault.meta.database_name, &canonical);
+
+        {
+            let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+            *sess_guard = Some(UnlockedSession {
+                vault,
+                credentials,
+                keyfile_path: saved_kf_path,
+                location,
+                last_activity: Instant::now(),
+                dirty: false,
+            });
         }
-        None => None,
-    };
 
-    let credentials = MasterCredentials::from_password_and_keyfile(
-        bio_creds.master_password.clone(),
-        keyfile_bytes,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let raw_bytes = read_bytes_from_location(&app, &location)?;
-    let vault = open_kdbx_bytes(&raw_bytes, &credentials).map_err(|e| e.to_string())?;
-    state.failed_unlock_attempts.store(0, Ordering::SeqCst);
-
-    {
-        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
-        *sess_guard = Some(UnlockedSession {
-            vault,
-            credentials,
-            keyfile_path: saved_kf_path,
-            location,
-            last_activity: Instant::now(),
-            dirty: false,
-        });
+        build_status(&state)
     }
-
-    build_status(&state)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1322,18 +1695,23 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_default_vault_dir,
+            get_storage_roots,
+            list_directory_folders,
+            create_directory,
             list_local_vaults,
             get_vault_status,
             create_vault,
             open_vault,
             lock_vault,
             save_vault,
+            move_vault_to_path,
             generate_keyfile_to_path,
             list_groups,
             create_group,
             delete_group,
             list_entries,
             get_entry,
+            copy_entry_password,
             upsert_entry,
             delete_entry,
             toggle_favorite,

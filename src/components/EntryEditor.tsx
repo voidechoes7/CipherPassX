@@ -2,14 +2,19 @@ import React, { useEffect, useState } from "react";
 import {
   ChevronLeft,
   Copy,
+  CreditCard,
   Eye,
   EyeOff,
+  FileText,
   History,
+  KeyRound,
   Lock,
   Plus,
   Save,
+  ShieldCheck,
   Star,
   Tag,
+  Terminal,
   Trash2,
   Unlock,
   Wand2,
@@ -29,15 +34,16 @@ interface Props {
   entry: EntryDetail | null;
   defaultGroupId: string;
   groups: GroupNode;
+  initialFocusTotp?: boolean;
   onSaved: (saved: EntryDetail) => void;
   onDeleted: () => void;
   onCopy: (secret: string, label: string) => void;
   onBackMobile?: () => void;
 }
 
-function flattenGroups(node: GroupNode, depth = 0): { id: string; label: string }[] {
+function flattenGroups(node: GroupNode, depth = 0): { id: string; name: string; label: string }[] {
   const prefix = depth > 0 ? `${"— ".repeat(depth)}` : "";
-  const list = [{ id: node.id, label: `${prefix}${node.name}` }];
+  const list = [{ id: node.id, name: node.name, label: `${prefix}${node.name}` }];
   for (const sub of node.subgroups) {
     list.push(...flattenGroups(sub, depth + 1));
   }
@@ -48,6 +54,7 @@ export const EntryEditor: React.FC<Props> = ({
   entry,
   defaultGroupId,
   groups,
+  initialFocusTotp = false,
   onSaved,
   onDeleted,
   onCopy,
@@ -77,6 +84,8 @@ export const EntryEditor: React.FC<Props> = ({
   const [entropy, setEntropy] = useState<EntropyReport | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const groupOptions = flattenGroups(groups);
 
   useEffect(() => {
     setGroupId(entry?.group_id ?? defaultGroupId);
@@ -117,7 +126,38 @@ export const EntryEditor: React.FC<Props> = ({
     };
   }, [password]);
 
-  const groupOptions = flattenGroups(groups);
+  const applyTemplate = (kind: "login" | "totp" | "bank" | "dev" | "note") => {
+    const findGroup = (keyword: string) =>
+      groupOptions.find((g) => g.name.toLowerCase().includes(keyword))?.id;
+
+    if (kind === "login") {
+      setGroupId(findGroup("general") ?? defaultGroupId);
+      setCustomFields([]);
+    } else if (kind === "totp") {
+      setGroupId(findGroup("2fa") ?? defaultGroupId);
+      setTagsText("2fa");
+    } else if (kind === "bank") {
+      setGroupId(findGroup("bank") ?? defaultGroupId);
+      setTagsText("finance");
+      setCustomFields([
+        { key: "Card Number", value: "", protected: true },
+        { key: "Expiration", value: "", protected: false },
+        { key: "CVV", value: "", protected: true },
+        { key: "PIN", value: "", protected: true },
+      ]);
+    } else if (kind === "dev") {
+      setGroupId(findGroup("dev") ?? defaultGroupId);
+      setTagsText("dev, ssh");
+      setCustomFields([
+        { key: "API Token", value: "", protected: true },
+        { key: "SSH Passphrase", value: "", protected: true },
+      ]);
+    } else if (kind === "note") {
+      setGroupId(findGroup("general") ?? defaultGroupId);
+      setTagsText("note");
+      setCustomFields([{ key: "Recovery Seed", value: "", protected: true }]);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,16 +206,25 @@ export const EntryEditor: React.FC<Props> = ({
     }
   };
 
+  const entropyBarColor =
+    (entropy?.score ?? 0) >= 85
+      ? "bg-cyan-400"
+      : (entropy?.score ?? 0) >= 60
+      ? "bg-emerald-400"
+      : (entropy?.score ?? 0) >= 35
+      ? "bg-amber-400"
+      : "bg-rose-500";
+
   return (
-    <form onSubmit={handleSave} className="h-full flex flex-col">
-      {/* Top Action Bar */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-800/80 bg-[#0D111A]/90">
+    <form onSubmit={handleSave} className="h-full flex flex-col overflow-hidden">
+      {/* Sticky Top Action Bar */}
+      <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2.5 border-b border-slate-800/80 bg-[#0D111A]/95 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {onBackMobile && (
             <button
               type="button"
               onClick={onBackMobile}
-              className="lg:hidden p-1.5 rounded-lg bg-slate-800 text-slate-200"
+              className="lg:hidden p-1.5 rounded-lg bg-slate-800 text-slate-200 shrink-0"
               aria-label="Back to list"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -184,7 +233,7 @@ export const EntryEditor: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => setFavorite(!favorite)}
-            className={`p-1.5 rounded-lg border transition ${
+            className={`p-1.5 rounded-lg border shrink-0 transition ${
               favorite
                 ? "bg-amber-500/15 border-amber-400/40 text-amber-300"
                 : "bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300"
@@ -198,15 +247,15 @@ export const EntryEditor: React.FC<Props> = ({
           </h2>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {entry && entry.history.length > 0 && (
             <button
               type="button"
               onClick={() => setShowHistory(!showHistory)}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5"
+              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1"
             >
               <History className="w-3.5 h-3.5 text-violet-400" />
-              <span className="hidden sm:inline">History</span> ({entry.history.length})
+              <span>{entry.history.length}</span>
             </button>
           )}
           {entry && (
@@ -222,7 +271,7 @@ export const EntryEditor: React.FC<Props> = ({
           <button
             type="submit"
             disabled={saving}
-            className="px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs flex items-center gap-1.5 transition"
+            className="px-3.5 py-1.5 rounded-lg cyber-btn-primary font-bold text-xs flex items-center gap-1.5 transition"
           >
             <Save className="w-3.5 h-3.5" />
             {saving ? "Saving..." : "Save"}
@@ -230,189 +279,238 @@ export const EntryEditor: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+      {/* Scrollable Structured Cards Body */}
+      <div className="flex-1 overflow-y-auto p-3 sm:p-5 space-y-4">
         {error && (
           <div className="rounded-xl bg-rose-500/10 border border-rose-500/40 px-3.5 py-2.5 text-xs text-rose-200">
             {error}
           </div>
         )}
 
-        {/* Live TOTP Badge */}
+        {/* Quick Templates Bar when creating a new entry */}
+        {!entry && (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            {[
+              { id: "login" as const, icon: KeyRound, label: "Login" },
+              { id: "totp" as const, icon: ShieldCheck, label: "2FA Token" },
+              { id: "bank" as const, icon: CreditCard, label: "Bank / Card" },
+              { id: "dev" as const, icon: Terminal, label: "SSH / API" },
+              { id: "note" as const, icon: FileText, label: "Recovery / Note" },
+            ].map((tpl) => {
+              const Icon = tpl.icon;
+              return (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() => applyTemplate(tpl.id)}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#0D111A] hover:bg-slate-800 border border-slate-800 hover:border-cyan-400/40 text-[11px] font-medium text-slate-300 hover:text-cyan-200 flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                >
+                  <Icon className="w-3.5 h-3.5 text-cyan-400" />
+                  {tpl.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Live TOTP Preview (Always pinned at top if present) */}
         {totpUri.trim() && <TotpBadge uriOrSecret={totpUri} onCopy={onCopy} />}
 
-        {/* Title & Group */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">Title</label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., GitHub, Proton, Bank"
-              className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-sm text-white focus:outline-none focus:border-cyan-400"
-            />
+        {/* Card 1: Identity & Folder */}
+        <div className="cyber-panel rounded-2xl p-4 space-y-3.5">
+          <div className="text-[10px] font-bold uppercase tracking-wider cyber-accent-text">
+            1 · Identity &amp; Folder
           </div>
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">Folder / Group</label>
-            <select
-              value={groupId}
-              onChange={(e) => setGroupId(e.target.value)}
-              className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-sm text-white focus:outline-none focus:border-cyan-400"
-            >
-              {groupOptions.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Username */}
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">Username / Email</label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="user@domain.com"
-              className="flex-1 rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400"
-            />
-            {username && (
-              <button
-                type="button"
-                onClick={() => onCopy(username, "Username")}
-                className="px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200"
-                title="Copy username"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Password */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-xs text-slate-400">
-              Password <span className="text-cyan-400/80 font-mono text-[10px]">(ChaCha20 Protected)</span>
-            </label>
-            <button
-              type="button"
-              onClick={() => setShowGenerator(!showGenerator)}
-              className="text-xs text-cyan-300 hover:text-cyan-200 flex items-center gap-1"
-            >
-              <Wand2 className="w-3.5 h-3.5" />
-              {showGenerator ? "Hide Generator" : "Generate CSPRNG"}
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Title *</label>
               <input
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter or generate password..."
-                autoComplete="off"
-                className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-3.5 pr-10 py-2 text-sm font-mono text-cyan-200 focus:outline-none focus:border-cyan-400"
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g., GitHub, Proton, Bank"
+                className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-400"
               />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Folder / Group</label>
+              <select
+                value={groupId}
+                onChange={(e) => setGroupId(e.target.value)}
+                className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-400"
+              >
+                {groupOptions.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Website / URL</label>
+              <input
+                type="text"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://..."
+                className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1 flex items-center gap-1">
+                <Tag className="w-3 h-3" /> Tags
+              </label>
+              <input
+                type="text"
+                value={tagsText}
+                onChange={(e) => setTagsText(e.target.value)}
+                placeholder="dev, finance, critical"
+                className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Card 2: Credentials */}
+        <div className="cyber-panel rounded-2xl p-4 space-y-3.5">
+          <div className="text-[10px] font-bold uppercase tracking-wider cyber-accent-text">
+            2 · Login Credentials (ChaCha20 Protected)
+          </div>
+
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Username / Email</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="user@domain.com"
+                className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm font-mono text-white focus:outline-none focus:border-cyan-400"
+              />
+              {username && (
+                <button
+                  type="button"
+                  onClick={() => onCopy(username, "Username")}
+                  className="px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 shrink-0"
+                  title="Copy username"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs text-slate-400">Password</label>
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-300"
+                onClick={() => setShowGenerator(!showGenerator)}
+                className="text-xs font-semibold cyber-accent-text hover:opacity-80 flex items-center gap-1"
               >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                <Wand2 className="w-3.5 h-3.5" />
+                {showGenerator ? "Hide Generator" : "Generate CSPRNG"}
               </button>
             </div>
-            {password && (
-              <button
-                type="button"
-                onClick={() => onCopy(password, "Password")}
-                className="px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/30 text-cyan-300"
-                title="Copy password (auto-clears)"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
+            <div className="flex gap-2">
+              <div className="relative flex-1 min-w-0">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter or generate password..."
+                  autoComplete="off"
+                  className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-3 pr-10 py-2 text-sm font-mono text-cyan-200 focus:outline-none focus:border-cyan-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-300"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {password && (
+                <button
+                  type="button"
+                  onClick={() => onCopy(password, "Password")}
+                  className="px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/30 text-cyan-300 shrink-0"
+                  title="Copy password (auto-clears)"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {entropy && (
+              <div className="space-y-1">
+                <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${entropyBarColor}`}
+                    style={{ width: `${entropy.score}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                  <span>{entropy.strength}</span>
+                  <span>
+                    {entropy.entropy_bits}b ·{" "}
+                    <span className="text-cyan-300">{entropy.post_quantum_bits}b PQ</span>
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {showGenerator && (
+              <div className="rounded-xl bg-[#07090F] border cyber-accent-border p-3.5 mt-2">
+                <GeneratorPanel
+                  onCopy={onCopy}
+                  onApply={(pw) => {
+                    setPassword(pw);
+                    setShowGenerator(false);
+                  }}
+                />
+              </div>
             )}
           </div>
-
-          {entropy && (
-            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-              <span>{entropy.strength}</span>
-              <span>
-                {entropy.entropy_bits} bits ·{" "}
-                <span className="text-cyan-300">{entropy.post_quantum_bits} PQ-bits</span>
-              </span>
-            </div>
-          )}
-
-          {showGenerator && (
-            <div className="rounded-xl bg-[#0D111A] border border-cyan-500/25 p-4 mt-2">
-              <GeneratorPanel
-                onCopy={onCopy}
-                onApply={(pw) => {
-                  setPassword(pw);
-                  setShowGenerator(false);
-                }}
-              />
-            </div>
-          )}
         </div>
 
-        {/* URL & Tags */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">URL</label>
-            <input
-              type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://..."
-              className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
-            />
+        {/* Card 3: 2FA / TOTP Authenticator */}
+        <div
+          className={`cyber-panel rounded-2xl p-4 space-y-2.5 ${
+            initialFocusTotp ? "border-cyan-400/50" : ""
+          }`}
+        >
+          <div className="text-[10px] font-bold uppercase tracking-wider cyber-accent-text flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            3 · 2FA / TOTP Authenticator (Offline RFC 6238)
           </div>
-          <div>
-            <label className="block text-xs text-slate-400 mb-1 flex items-center gap-1">
-              <Tag className="w-3 h-3" /> Tags (comma-separated)
-            </label>
-            <input
-              type="text"
-              value={tagsText}
-              onChange={(e) => setTagsText(e.target.value)}
-              placeholder="dev, finance, critical"
-              className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
-            />
-          </div>
-        </div>
-
-        {/* TOTP Configuration */}
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">
-            2FA / TOTP Secret or <code className="text-cyan-300">otpauth://</code> URI (Offline RFC 6238)
-          </label>
           <input
             type="text"
             value={totpUri}
+            autoFocus={initialFocusTotp}
             onChange={(e) => setTotpUri(e.target.value)}
-            placeholder="otpauth://totp/Issuer:user?secret=BASE32SECRET... or raw Base32 secret"
-            className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-400"
+            placeholder="Paste Base32 secret (JBSWY3DPEHPK3PXP) or otpauth://totp/... URI"
+            className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-400"
           />
+          <p className="text-[10px] text-slate-500">
+            Stored encrypted inside KDBX 4 (<code className="text-slate-400">otp</code> protected field — interoperable with KeePassXC &amp; KeePassDX).
+          </p>
         </div>
 
-        {/* Custom Protected Fields */}
-        <div className="space-y-2.5">
+        {/* Card 4: Custom Protected Fields */}
+        <div className="cyber-panel rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <label className="text-xs font-medium text-slate-300">
-              Custom Fields (Protected / Plaintext)
-            </label>
+            <div className="text-[10px] font-bold uppercase tracking-wider cyber-accent-text">
+              4 · Custom Protected Fields
+            </div>
             <button
               type="button"
               onClick={() =>
                 setCustomFields([...customFields, { key: "", value: "", protected: true }])
               }
-              className="text-xs text-violet-300 hover:text-violet-200 flex items-center gap-1"
+              className="text-xs text-violet-300 hover:text-violet-200 flex items-center gap-1 font-medium"
             >
               <Plus className="w-3.5 h-3.5" /> Add Field
             </button>
@@ -425,7 +523,7 @@ export const EntryEditor: React.FC<Props> = ({
                 onClick={() =>
                   setCustomFields([...customFields, { key: tpl, value: "", protected: true }])
                 }
-                className="text-[10px] font-mono px-2 py-1 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-300 hover:text-cyan-300 transition"
+                className="text-[10px] font-mono px-2 py-1 rounded-md bg-[#07090F] hover:bg-slate-800 border border-slate-700/80 text-slate-300 hover:text-cyan-300 transition"
               >
                 + {tpl}
               </button>
@@ -442,10 +540,10 @@ export const EntryEditor: React.FC<Props> = ({
                   next[idx] = { ...cf, key: e.target.value };
                   setCustomFields(next);
                 }}
-                placeholder="Field name (e.g. PIN, Recovery)"
-                className="sm:w-44 rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1.5 text-xs text-white"
+                placeholder="Field name"
+                className="sm:w-40 rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1.5 text-xs text-white"
               />
-              <div className="flex flex-1 gap-1.5">
+              <div className="flex flex-1 gap-1.5 min-w-0">
                 <input
                   type={cf.protected && !revealedFields[idx] ? "password" : "text"}
                   value={cf.value}
@@ -455,7 +553,7 @@ export const EntryEditor: React.FC<Props> = ({
                     setCustomFields(next);
                   }}
                   placeholder="Value"
-                  className="flex-1 rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1.5 text-xs font-mono text-slate-200"
+                  className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1.5 text-xs font-mono text-slate-200"
                 />
                 {cf.protected && (
                   <button
@@ -463,10 +561,14 @@ export const EntryEditor: React.FC<Props> = ({
                     onClick={() =>
                       setRevealedFields({ ...revealedFields, [idx]: !revealedFields[idx] })
                     }
-                    className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-cyan-300"
+                    className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-cyan-300 shrink-0"
                     title="Reveal/hide"
                   >
-                    {revealedFields[idx] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {revealedFields[idx] ? (
+                      <EyeOff className="w-3.5 h-3.5" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 )}
                 <button
@@ -476,7 +578,7 @@ export const EntryEditor: React.FC<Props> = ({
                     next[idx] = { ...cf, protected: !cf.protected };
                     setCustomFields(next);
                   }}
-                  className={`p-2 rounded-lg border ${
+                  className={`p-2 rounded-lg border shrink-0 ${
                     cf.protected
                       ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-300"
                       : "bg-slate-800 border-slate-700 text-slate-400"
@@ -488,7 +590,7 @@ export const EntryEditor: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => onCopy(cf.value, cf.key || "Custom field")}
-                  className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-cyan-300"
+                  className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-cyan-300 shrink-0"
                   title="Copy value"
                 >
                   <Copy className="w-3.5 h-3.5" />
@@ -496,7 +598,7 @@ export const EntryEditor: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => setCustomFields(customFields.filter((_, i) => i !== idx))}
-                  className="p-2 rounded-lg bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                  className="p-2 rounded-lg bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 shrink-0"
                   title="Remove field"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -506,41 +608,42 @@ export const EntryEditor: React.FC<Props> = ({
           ))}
         </div>
 
-        {/* Expiry & Notes */}
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={expires}
-              onChange={(e) => setExpires(e.target.checked)}
-              className="accent-cyan-400"
-            />
-            Set Expiration Date
-          </label>
-          {expires && (
-            <input
-              type="date"
-              value={expiryDate}
-              onChange={(e) => setExpiryDate(e.target.value)}
-              className="rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1 text-xs font-mono text-white"
-            />
-          )}
-        </div>
-
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">Notes</label>
+        {/* Card 5: Notes & Expiration */}
+        <div className="cyber-panel rounded-2xl p-4 space-y-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider cyber-accent-text">
+            5 · Notes &amp; Expiration
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={expires}
+                onChange={(e) => setExpires(e.target.checked)}
+                className="accent-cyan-400"
+              />
+              Set Expiration Date
+            </label>
+            {expires && (
+              <input
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                className="rounded-lg bg-[#07090F] border border-slate-700 px-3 py-1 text-xs font-mono text-white"
+              />
+            )}
+          </div>
           <textarea
-            rows={4}
+            rows={3}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Secure offline notes..."
-            className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+            className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
           />
         </div>
 
         {/* Password History */}
         {showHistory && entry && entry.history.length > 0 && (
-          <div className="rounded-xl bg-[#07090F] border border-violet-500/30 p-4 space-y-3">
+          <div className="rounded-2xl bg-[#07090F] border border-violet-500/30 p-4 space-y-3">
             <div className="text-xs font-semibold text-violet-300 uppercase tracking-wider">
               Password History ({entry.history.length})
             </div>

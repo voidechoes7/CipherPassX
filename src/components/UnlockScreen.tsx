@@ -32,6 +32,7 @@ import type {
   LocalVaultInfo,
   VaultStatus,
 } from "../types";
+import { FolderPickerModal } from "./FolderPickerModal";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { ThemePicker } from "./ThemePicker";
 
@@ -66,6 +67,7 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
   const [info, setInfo] = useState<string | null>(null);
   const [bioAvailable, setBioAvailable] = useState(false);
   const [hasBioSlot, setHasBioSlot] = useState(false);
+  const [showFolderModal, setShowFolderModal] = useState(false);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -281,7 +283,7 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
       : "bg-rose-500";
 
   return (
-    <div className="min-h-full w-full overflow-x-hidden cyber-grid flex flex-col items-center justify-start sm:justify-center px-3 py-5 sm:p-6 bg-[radial-gradient(ellipse_at_top,_rgba(0,240,255,0.10),_transparent_58%),radial-gradient(ellipse_at_bottom_right,_rgba(139,92,246,0.10),_transparent_55%)]">
+    <div className="min-h-full w-full overflow-y-auto overflow-x-hidden safe-top safe-bottom cyber-grid flex flex-col items-center justify-start sm:justify-center px-3 py-4 sm:p-6 bg-[radial-gradient(ellipse_at_top,_rgba(0,240,255,0.10),_transparent_58%),radial-gradient(ellipse_at_bottom_right,_rgba(139,92,246,0.10),_transparent_55%)]">
       <div className="w-full max-w-xl cyber-panel rounded-2xl p-4 sm:p-7 space-y-5">
         {/* Top Status Strip — zero overflow on narrow mobile screens */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -692,6 +694,21 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
           </span>
         </div>
       </div>
+
+      <FolderPickerModal
+        open={showFolderModal}
+        defaultFileName={`${
+          databaseName
+            .trim()
+            .replace(/[^a-zA-Z0-9_-]+/g, "_")
+            .replace(/^_+|_+$/g, "") || "CipherPass_Vault"
+        }.kdbx`}
+        onSelectFullPath={(fullPath) => {
+          setVaultPath(fullPath);
+          setInfo(`Vault will be saved to: ${fullPath}`);
+        }}
+        onClose={() => setShowFolderModal(false)}
+      />
     </div>
   );
 };

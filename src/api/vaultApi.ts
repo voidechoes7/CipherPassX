@@ -8,6 +8,7 @@ import type {
   EntrySummary,
   EntryUpsertRequest,
   EntropyReport,
+  FolderListing,
   GeneratedSecret,
   GroupNode,
   KdfAlgorithm,
@@ -17,6 +18,7 @@ import type {
   PassphraseGenOptions,
   PasswordGenOptions,
   SecurityAuditReport,
+  StorageRoot,
   TotpCode,
   VaultStatus,
 } from "../types";
@@ -119,6 +121,15 @@ export async function pickOpenPqFile(): Promise<string | null> {
 
 export const vaultApi = {
   getDefaultVaultDir: () => invoke<string>("get_default_vault_dir"),
+  getStorageRoots: () => invoke<StorageRoot[]>("get_storage_roots"),
+  listDirectoryFolders: (path: string) =>
+    invoke<FolderListing>("list_directory_folders", { path }),
+  createDirectory: (parentPath: string, folderName: string) =>
+    invoke<string>("create_directory", { parentPath, folderName }),
+  moveVaultToPath: (destPath: string) =>
+    invoke<VaultStatus>("move_vault_to_path", { destPath }),
+  copyEntryPassword: (entryId: string) =>
+    invoke<number>("copy_entry_password", { entryId }),
   listLocalVaults: () => invoke<LocalVaultInfo[]>("list_local_vaults"),
   clearClipboardNow: () => invoke<void>("clear_clipboard_now"),
   hasBiometricSlot: (path: string) => invoke<boolean>("has_biometric_slot", { path }),

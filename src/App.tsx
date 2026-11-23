@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
+  Copy,
   Eraser,
   Folder,
   FolderPlus,
@@ -12,6 +13,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Star,
+  User,
   Wand2,
   WifiOff,
 } from "lucide-react";
@@ -35,6 +37,7 @@ export const App: React.FC = () => {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<EntryDetail | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
+  const [focusTotpOnCreate, setFocusTotpOnCreate] = useState(false);
 
   useEffect(() => {
     applyTheme(theme);
@@ -220,9 +223,10 @@ export const App: React.FC = () => {
   );
 
   return (
-    <div className="h-full flex flex-col bg-[#07090F] text-slate-100 overflow-hidden">
-      {/* Top Bar */}
-      <header className="h-14 px-4 border-b border-slate-800/90 bg-[#0D111A] flex items-center justify-between gap-3 shrink-0">
+    <div className="h-full w-full flex flex-col bg-[#07090F] text-slate-100 overflow-hidden">
+      {/* Top Bar — single safe-top inset */}
+      <header className="safe-top px-3 sm:px-4 border-b border-slate-800/90 bg-[#0D111A] shrink-0">
+        <div className="h-14 flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-9 h-9 rounded-lg overflow-hidden border border-cyan-400/35 shrink-0 bg-[#07090F]">
             <img src="/logo.png" alt="CipherPass" className="w-full h-full object-cover" />
@@ -284,6 +288,7 @@ export const App: React.FC = () => {
             <Lock className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Lock</span>
           </button>
+        </div>
         </div>
       </header>
 
@@ -436,7 +441,7 @@ export const App: React.FC = () => {
         ) : activeTab === "totp" && !showingEditorMobile ? (
           <main className="flex-1 overflow-y-auto p-4 sm:p-6">
             <div className="max-w-4xl mx-auto space-y-5">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                   <h2 className="text-lg font-bold text-white flex items-center gap-2">
                     <ShieldCheck className="w-5 h-5 cyber-accent-text" />
@@ -446,13 +451,34 @@ export const App: React.FC = () => {
                     Live RFC 6238 tokens synced to your local device clock — zero cloud required.
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedEntry(null);
+                    setCreatingNew(true);
+                    setFocusTotpOnCreate(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl cyber-btn-primary text-xs font-bold flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add 2FA Token
+                </button>
               </div>
               {entries.length === 0 ? (
-                <div className="cyber-panel rounded-2xl p-8 text-center text-xs text-slate-400 space-y-2">
+                <div className="cyber-panel rounded-2xl p-8 text-center text-xs text-slate-400 space-y-3">
                   <p>No 2FA/TOTP tokens configured yet.</p>
-                  <p className="text-slate-500">
-                    Open any entry and paste an <code className="text-cyan-300">otpauth://</code> URI or Base32 secret.
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedEntry(null);
+                      setCreatingNew(true);
+                      setFocusTotpOnCreate(true);
+                    }}
+                    className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Your First 2FA Token
+                  </button>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -489,7 +515,7 @@ export const App: React.FC = () => {
                 showingEditorMobile ? "hidden lg:flex" : "flex"
               } w-full lg:w-80 xl:w-96 flex-col border-r border-slate-800/80 bg-[#0A0E16] shrink-0`}
             >
-              <div className="p-3 border-b border-slate-800/80">
+              <div className="p-3 border-b border-slate-800/80 space-y-2.5">
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
@@ -500,56 +526,165 @@ export const App: React.FC = () => {
                     className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
                   />
                 </div>
+
+                {/* Mobile Horizontal Folder & Filter Pills Bar */}
+                <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFavoritesOnly(false);
+                      setSelectedGroupId(null);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 ${
+                      !favoritesOnly && !selectedGroupId
+                        ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFavoritesOnly(true);
+                      setSelectedGroupId(null);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 flex items-center gap-1 ${
+                      favoritesOnly
+                        ? "bg-amber-500/15 border-amber-400/40 text-amber-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-400"
+                    }`}
+                  >
+                    <Star className="w-3 h-3" />
+                    Favs
+                  </button>
+                  {groups?.subgroups.map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => {
+                        setFavoritesOnly(false);
+                        setSelectedGroupId(sub.id);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 ${
+                        !favoritesOnly && selectedGroupId === sub.id
+                          ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
+                          : "bg-[#07090F] border-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {sub.name}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowNewGroupInput(!showNewGroupInput)}
+                    className="px-2 py-1 rounded-lg text-[11px] bg-slate-800 text-cyan-300 border border-slate-700 shrink-0"
+                    title="New Folder"
+                  >
+                    + Folder
+                  </button>
+                </div>
+
+                {showNewGroupInput && (
+                  <form onSubmit={handleCreateGroup} className="flex md:hidden gap-1.5">
+                    <input
+                      type="text"
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      placeholder="New folder name..."
+                      className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 rounded-lg cyber-btn-primary text-xs font-bold"
+                    >
+                      Add
+                    </button>
+                  </form>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
                 {entries.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-500 space-y-2">
+                  <div className="p-8 text-center text-xs text-slate-500 space-y-2.5">
                     <p>No entries match this filter.</p>
                     <button
                       type="button"
                       onClick={() => {
                         setSelectedEntry(null);
                         setCreatingNew(true);
+                        setFocusTotpOnCreate(false);
                       }}
-                      className="text-cyan-400 hover:underline"
+                      className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold inline-flex items-center gap-1.5"
                     >
-                      + Create your first entry
+                      <Plus className="w-3.5 h-3.5" />
+                      Create First Entry
                     </button>
                   </div>
                 ) : (
                   entries.map((item) => {
                     const active = selectedEntry?.id === item.id && !creatingNew;
                     return (
-                      <button
+                      <div
                         key={item.id}
-                        type="button"
-                        onClick={() => handleSelectEntry(item.id)}
-                        className={`w-full text-left px-4 py-3 transition ${
+                        className={`px-3.5 py-3 flex items-center justify-between gap-2 transition ${
                           active
                             ? "bg-cyan-500/10 border-l-2 border-cyan-400"
                             : "hover:bg-slate-800/40"
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-medium text-white truncate">
-                            {item.title || "(Untitled)"}
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectEntry(item.id)}
+                          className="flex-1 min-w-0 text-left"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm font-medium text-white truncate">
+                              {item.title || "(Untitled)"}
+                            </span>
                             {item.has_totp && (
-                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
                                 2FA
                               </span>
                             )}
                             {item.favorite && (
-                              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
                             )}
                           </div>
+                          <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
+                            {item.username || item.url || "—"}
+                          </div>
+                        </button>
+
+                        {/* 1-tap Quick Copy buttons */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {item.username && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(item.username, "Username")}
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition"
+                              title="Quick copy username"
+                            >
+                              <User className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const secs = await vaultApi.copyEntryPassword(item.id);
+                                showToast(`Password copied — clears in ${secs}s`);
+                              } catch (err) {
+                                showToast(String(err));
+                              }
+                            }}
+                            className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
+                            title="Quick copy password (auto-clear)"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
-                          {item.username || item.url || "—"}
-                        </div>
-                      </button>
+                      </div>
                     );
                   })
                 )}
@@ -567,15 +702,18 @@ export const App: React.FC = () => {
                   entry={creatingNew ? null : selectedEntry}
                   defaultGroupId={defaultGroupId}
                   groups={groups}
+                  initialFocusTotp={creatingNew && focusTotpOnCreate}
                   onSaved={(saved) => {
                     setSelectedEntry(saved);
                     setCreatingNew(false);
+                    setFocusTotpOnCreate(false);
                     refreshVaultData();
                     showToast("Entry encrypted & saved atomically.");
                   }}
                   onDeleted={() => {
                     setSelectedEntry(null);
                     setCreatingNew(false);
+                    setFocusTotpOnCreate(false);
                     refreshVaultData();
                     showToast("Entry deleted & zeroized.");
                   }}
@@ -583,6 +721,7 @@ export const App: React.FC = () => {
                   onBackMobile={() => {
                     setSelectedEntry(null);
                     setCreatingNew(false);
+                    setFocusTotpOnCreate(false);
                   }}
                 />
               ) : (
@@ -601,40 +740,43 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Mobile Bottom Navigation */}
-      <nav className="md:hidden h-14 border-t border-slate-800 bg-[#0D111A] grid grid-cols-5 shrink-0">
-        {[
-          { id: "vault" as const, icon: KeyRound, label: "Vault" },
-          { id: "totp" as const, icon: ShieldCheck, label: "2FA" },
-          { id: "generator" as const, icon: Wand2, label: "Gen" },
-          { id: "audit" as const, icon: ShieldAlert, label: "Audit" },
-          { id: "settings" as const, icon: Settings, label: "Crypto" },
-        ].map((item) => {
-          const Icon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setActiveTab(item.id);
-                setSelectedEntry(null);
-                setCreatingNew(false);
-              }}
-              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] ${
-                isActive ? "text-cyan-400" : "text-slate-400"
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+      {/* Mobile Bottom Navigation — single safe-bottom inset */}
+      <nav className="md:hidden safe-bottom border-t border-slate-800 bg-[#0D111A] shrink-0">
+        <div className="h-14 grid grid-cols-5">
+          {[
+            { id: "vault" as const, icon: KeyRound, label: "Vault" },
+            { id: "totp" as const, icon: ShieldCheck, label: "2FA" },
+            { id: "generator" as const, icon: Wand2, label: "Gen" },
+            { id: "audit" as const, icon: ShieldAlert, label: "Audit" },
+            { id: "settings" as const, icon: Settings, label: "Crypto" },
+          ].map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSelectedEntry(null);
+                  setCreatingNew(false);
+                  setFocusTotpOnCreate(false);
+                }}
+                className={`flex flex-col items-center justify-center gap-0.5 text-[10px] ${
+                  isActive ? "cyber-accent-text font-semibold" : "text-slate-400"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
 
       {/* Toast Notification */}
       {toast && (
-        <div className="fixed bottom-16 md:bottom-5 right-4 z-50 rounded-xl bg-[#0D111A] border border-cyan-400/40 px-4 py-2.5 text-xs text-cyan-200 shadow-xl cyber-glow">
+        <div className="fixed bottom-20 md:bottom-5 right-4 z-50 rounded-xl bg-[#0D111A] border border-cyan-400/40 px-4 py-2.5 text-xs text-cyan-200 shadow-xl cyber-glow">
           {toast}
         </div>
       )}

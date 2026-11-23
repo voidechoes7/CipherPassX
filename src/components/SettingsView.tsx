@@ -1,6 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { Atom, Download, FileKey2, Fingerprint, Lock, Save, Shield, Unlock } from "lucide-react";
 import {
+  Atom,
+  Download,
+  FileKey2,
+  Fingerprint,
+  FolderInput,
+  Lock,
+  Save,
+  Shield,
+  Unlock,
+} from "lucide-react";
+import {
+  isMobilePlatform,
   pickOpenPqFile,
   pickSaveKdbxFile,
   pickSaveKeyfile,
@@ -9,6 +20,7 @@ import {
 } from "../api/vaultApi";
 import type { ThemeId } from "../themes";
 import type { CipherAlgorithm, KdfAlgorithm, MlKem1024Keypair, VaultStatus } from "../types";
+import { FolderPickerModal } from "./FolderPickerModal";
 import { ThemePicker } from "./ThemePicker";
 
 interface Props {
@@ -43,6 +55,7 @@ export const SettingsView: React.FC<Props> = ({
 
   // Biometric Vault Keyslot state (ChaCha20-Poly1305 bound to this .kdbx Master Key)
   const [bioEnabled, setBioEnabled] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
 
   useEffect(() => {
     if (!status.path) return;
@@ -244,81 +257,96 @@ export const SettingsView: React.FC<Props> = ({
         </button>
       </form>
 
-      {/* Biometric Vault Unlock (Bound to KDBX Master Key) */}
-      <div className="cyber-panel rounded-2xl p-5 space-y-3 border-emerald-500/30">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Fingerprint className="w-4 h-4 text-emerald-400" />
-              Biometric Vault Unlock (Bound to Master Password)
-            </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-              Seals this vault&apos;s Master Password (+ Keyfile path) inside a ChaCha20-Poly1305 keyslot with AAD bound to this specific <code className="text-cyan-300">.kdbx</code>. Unlocking requires native OS Fingerprint / Face ID before Rust decrypts the vault.
-            </p>
+      {/* Biometric Vault Unlock (Android BiometricPrompt / iOS Face ID — Bound to KDBX Master Key) */}
+      {isMobilePlatform() && (
+        <div className="cyber-panel rounded-2xl p-5 space-y-3 border-emerald-500/30">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Fingerprint className="w-4 h-4 text-emerald-400" />
+                Biometric Vault Unlock (Bound to Master Password)
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Seals this vault&apos;s Master Password (+ Keyfile path) inside a ChaCha20-Poly1305 keyslot with AAD bound to this specific <code className="text-cyan-300">.kdbx</code>. Unlocking requires native OS Fingerprint / Face ID before Rust decrypts the vault.
+              </p>
+            </div>
+            <span
+              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border shrink-0 ${
+                bioEnabled
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/40"
+                  : "bg-slate-800 text-slate-400 border-slate-700"
+              }`}
+            >
+              {bioEnabled ? "ENABLED" : "OFF"}
+            </span>
           </div>
-          <span
-            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border shrink-0 ${
-              bioEnabled
-                ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/40"
-                : "bg-slate-800 text-slate-400 border-slate-700"
-            }`}
-          >
-            {bioEnabled ? "ENABLED" : "OFF"}
-          </span>
-        </div>
 
-        <div className="flex flex-wrap gap-2.5">
-          {!bioEnabled ? (
-            <button
-              type="button"
-              onClick={async () => {
-                setError(null);
-                setMessage(null);
-                try {
-                  await vaultApi.enableBiometricUnlock();
-                  setBioEnabled(true);
-                  setMessage(
-                    "Biometric Vault Unlock enabled! Your Master Password is sealed with ChaCha20-Poly1305 and gated by OS biometrics."
-                  );
-                } catch (err) {
-                  setError(String(err));
-                }
-              }}
-              className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-xs text-emerald-200 font-semibold flex items-center gap-2 transition"
-            >
-              <Fingerprint className="w-4 h-4" />
-              Bind Biometrics to This Vault
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={async () => {
-                setError(null);
-                setMessage(null);
-                try {
-                  await vaultApi.disableBiometricUnlock();
-                  setBioEnabled(false);
-                  setMessage("Biometric keyslot wiped and revoked for this vault.");
-                } catch (err) {
-                  setError(String(err));
-                }
-              }}
-              className="px-4 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs text-rose-200 font-semibold flex items-center gap-2 transition"
-            >
-              Revoke &amp; Wipe Biometric Keyslot
-            </button>
-          )}
+          <div className="flex flex-wrap gap-2.5">
+            {!bioEnabled ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  setError(null);
+                  setMessage(null);
+                  try {
+                    await vaultApi.enableBiometricUnlock();
+                    setBioEnabled(true);
+                    setMessage(
+                      "Biometric Vault Unlock enabled! Your Master Password is sealed with ChaCha20-Poly1305 and gated by OS biometrics."
+                    );
+                  } catch (err) {
+                    setError(String(err));
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-xs text-emerald-200 font-semibold flex items-center gap-2 transition"
+              >
+                <Fingerprint className="w-4 h-4" />
+                Bind Biometrics to This Vault
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  setError(null);
+                  setMessage(null);
+                  try {
+                    await vaultApi.disableBiometricUnlock();
+                    setBioEnabled(false);
+                    setMessage("Biometric keyslot wiped and revoked for this vault.");
+                  } catch (err) {
+                    setError(String(err));
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-xs text-rose-200 font-semibold flex items-center gap-2 transition"
+              >
+                Revoke &amp; Wipe Biometric Keyslot
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Backup & Keyfile Tools */}
+      {/* Vault Location, Move, Backup & Keyfile Tools */}
       <div className="cyber-panel rounded-2xl p-5 space-y-3">
-        <h3 className="text-sm font-semibold text-white">Offline Backup &amp; Keyfile Tools</h3>
-        <div className="flex flex-wrap gap-3">
+        <h3 className="text-sm font-semibold text-white">Vault Location, Backup &amp; Keyfile</h3>
+        {status.path && (
+          <div className="rounded-lg bg-[#07090F] border border-slate-800 px-3 py-2 text-[10px] font-mono text-slate-400 break-all">
+            Current file: <span className="text-cyan-300">{status.path}</span>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            onClick={() => setShowMoveModal(true)}
+            className="px-3.5 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/35 text-xs text-cyan-200 font-semibold flex items-center gap-2"
+          >
+            <FolderInput className="w-4 h-4" />
+            Move Vault to Another Folder
+          </button>
           <button
             type="button"
             onClick={handleExportBackup}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-cyan-300 font-medium flex items-center gap-2"
+            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-cyan-300 font-medium flex items-center gap-2"
           >
             <Download className="w-4 h-4" />
             Export Atomic .kdbx Backup
@@ -326,13 +354,34 @@ export const SettingsView: React.FC<Props> = ({
           <button
             type="button"
             onClick={handleGenerateKeyfile}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-violet-300 font-medium flex items-center gap-2"
+            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-violet-300 font-medium flex items-center gap-2"
           >
             <FileKey2 className="w-4 h-4" />
-            Generate New Keyfile v2.0 XML
+            Generate Keyfile v2.0 XML
           </button>
         </div>
       </div>
+
+      <FolderPickerModal
+        open={showMoveModal}
+        defaultFileName={`${
+          (status.database_name || "CipherPass_Vault")
+            .trim()
+            .replace(/[^a-zA-Z0-9_-]+/g, "_") || "CipherPass_Vault"
+        }.kdbx`}
+        onSelectFullPath={async (destPath) => {
+          setError(null);
+          setMessage(null);
+          try {
+            const updated = await vaultApi.moveVaultToPath(destPath);
+            onStatusUpdated(updated);
+            setMessage(`Vault moved & saved atomically to ${updated.path}`);
+          } catch (err) {
+            setError(String(err));
+          }
+        }}
+        onClose={() => setShowMoveModal(false)}
+      />
 
       {/* NIST FIPS 203 ML-KEM-1024 Post-Quantum Armor */}
       <div className="cyber-panel rounded-2xl p-5 space-y-4 border-violet-500/30">
