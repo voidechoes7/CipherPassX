@@ -10,6 +10,7 @@ import {
   Lock,
   PlusCircle,
   Sparkles,
+  Trash2,
   Wand2,
   WifiOff,
 } from "lucide-react";
@@ -17,11 +18,13 @@ import {
   checkBiometricAvailable,
   isMobilePlatform,
   isTauriRuntime,
+  loadHideRecentVaults,
   pickFolder,
   pickOpenKdbxFile,
   pickOpenKeyfile,
   pickSaveKdbxFile,
   pickSaveKeyfile,
+  saveHideRecentVaults,
   vaultApi,
 } from "../api/vaultApi";
 import type { ThemeId, UiStyleId } from "../themes";
@@ -76,6 +79,16 @@ export const UnlockScreen: React.FC<Props> = ({
   const [bioAvailable, setBioAvailable] = useState(false);
   const [hasBioSlot, setHasBioSlot] = useState(false);
   const [showFolderModal, setShowFolderModal] = useState(false);
+  const [hideRecents, setHideRecents] = useState<boolean>(() => loadHideRecentVaults());
+
+  const toggleHideRecents = () => {
+    const next = !hideRecents;
+    setHideRecents(next);
+    saveHideRecentVaults(next);
+    if (next) {
+      setVaultPath("");
+    }
+  };
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -88,7 +101,7 @@ export const UnlockScreen: React.FC<Props> = ({
       .listLocalVaults()
       .then((list) => {
         setLocalVaults(list);
-        if (list.length > 0) {
+        if (list.length > 0 && !loadHideRecentVaults()) {
           setVaultPath((prev) => prev || list[0].path);
         }
       })
@@ -373,32 +386,77 @@ export const UnlockScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Quick Saved Local Vaults Picker (Open Mode) */}
-        {mode === "open" && localVaults.length > 0 && (
+        {/* Quick Saved / Recent Vaults Picker (Open Mode) with Privacy Hide/Show toggle */}
+        {mode === "open" && (
           <div className="space-y-1.5">
-            <div className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
-              <Database className="w-3.5 h-3.5 text-cyan-400" />
-              Saved Device Vaults
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {localVaults.map((v) => {
-                const selected = vaultPath === v.path;
-                return (
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 cyber-accent-text" />
+                {hideRecents ? "Recent Vaults Hidden (Privacy Mode)" : "Recent & Saved Vaults"}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {!hideRecents && localVaults.length > 0 && (
                   <button
-                    key={v.path}
                     type="button"
-                    onClick={() => setVaultPath(v.path)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition truncate max-w-full ${
-                      selected
-                        ? "bg-cyan-500/15 border-cyan-400/50 text-cyan-200"
-                        : "bg-[#07090F] border-slate-800 text-slate-300 hover:border-slate-700"
-                    }`}
+                    onClick={async () => {
+                      try {
+                        await vaultApi.clearRecentVaults();
+                        const refreshed = await vaultApi.listLocalVaults();
+                        setLocalVaults(refreshed);
+                        setInfo("Recent vaults history cleared.");
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 flex items-center gap-1 transition"
+                    title="Clear recent vaults list"
                   >
-                    {v.name}
+                    <Trash2 className="w-3 h-3" />
+                    Clear
                   </button>
-                );
-              })}
+                )}
+                <button
+                  type="button"
+                  onClick={toggleHideRecents}
+                  className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 flex items-center gap-1 transition"
+                  title={hideRecents ? "Show recent vaults" : "Hide recent vaults for privacy"}
+                >
+                  {hideRecents ? (
+                    <>
+                      <Eye className="w-3 h-3 cyber-accent-text" />
+                      Show
+                    </>
+                  ) : (
+                    <>
+                      <EyeOff className="w-3 h-3 text-slate-400" />
+                      Hide
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
+
+            {!hideRecents && localVaults.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {localVaults.map((v) => {
+                  const selected = vaultPath === v.path;
+                  return (
+                    <button
+                      key={v.path}
+                      type="button"
+                      onClick={() => setVaultPath(v.path)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition truncate max-w-full ${
+                        selected
+                          ? "bg-cyan-500/15 border-cyan-400/50 text-cyan-200"
+                          : "bg-[#07090F] border-slate-800 text-slate-300 hover:border-slate-700"
+                      }`}
+                    >
+                      {v.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 

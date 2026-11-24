@@ -12,6 +12,7 @@ import type {
   FolderListing,
   GeneratedSecret,
   GroupNode,
+  ImportSummary,
   KdfAlgorithm,
   KdfConfig,
   LocalVaultInfo,
@@ -24,6 +25,24 @@ import type {
   TotpCode,
   VaultStatus,
 } from "../types";
+
+const HIDE_RECENT_KEY = "cipherpass_hide_recent_vaults_v1";
+
+export function loadHideRecentVaults(): boolean {
+  try {
+    return localStorage.getItem(HIDE_RECENT_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveHideRecentVaults(hide: boolean): void {
+  try {
+    localStorage.setItem(HIDE_RECENT_KEY, hide ? "true" : "false");
+  } catch {
+    // ignore storage restrictions
+  }
+}
 
 interface CipherPassAndroidBridge {
   hasAllFilesAccess?: () => boolean;
@@ -226,6 +245,41 @@ export async function pickOpenPqFile(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+export async function pickOpenJsonFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    multiple: false,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "Bitwarden / Encrypted JSON", extensions: ["json"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickSaveJsonFile(
+  defaultName = "CipherPass_Encrypted_Export.json"
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await saveDialog({
+    defaultPath: defaultName,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "Encrypted JSON Backup", extensions: ["json"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickOpenCsvFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    multiple: false,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "Bitwarden / KeePass CSV", extensions: ["csv"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
 export const vaultApi = {
   getDefaultVaultDir: () => invoke<string>("get_default_vault_dir"),
   getStorageRoots: () => invoke<StorageRoot[]>("get_storage_roots"),
@@ -238,6 +292,7 @@ export const vaultApi = {
   copyEntryPassword: (entryId: string) =>
     invoke<number>("copy_entry_password", { entryId }),
   listLocalVaults: () => invoke<LocalVaultInfo[]>("list_local_vaults"),
+  clearRecentVaults: () => invoke<void>("clear_recent_vaults"),
   clearClipboardNow: () => invoke<void>("clear_clipboard_now"),
   hasBiometricSlot: (path: string) => invoke<boolean>("has_biometric_slot", { path }),
   enableBiometricUnlock: () => invoke<boolean>("enable_biometric_unlock"),
@@ -278,7 +333,36 @@ export const vaultApi = {
       iconId: iconId ?? 48,
     }),
 
+  renameGroup: (groupId: string, name: string) =>
+    invoke<GroupNode>("rename_group", { groupId, name }),
+
   deleteGroup: (groupId: string) => invoke<void>("delete_group", { groupId }),
+
+  importBitwardenJsonFile: (srcPath: string, exportPassword?: string | null) =>
+    invoke<ImportSummary>("import_bitwarden_json_file", {
+      srcPath,
+      exportPassword: exportPassword ?? null,
+    }),
+
+  importCsvFile: (srcPath: string) =>
+    invoke<ImportSummary>("import_csv_file", { srcPath }),
+
+  importKdbxIntoVault: (
+    srcPath: string,
+    masterPassword?: string | null,
+    keyfilePath?: string | null
+  ) =>
+    invoke<ImportSummary>("import_kdbx_into_vault", {
+      srcPath,
+      masterPassword: masterPassword ?? null,
+      keyfilePath: keyfilePath ?? null,
+    }),
+
+  exportEncryptedJsonFile: (destPath: string, exportPassword: string) =>
+    invoke<string>("export_encrypted_json_file", {
+      destPath,
+      exportPassword,
+    }),
 
   listEntries: (params: {
     groupId?: string | null;

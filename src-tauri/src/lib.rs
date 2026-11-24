@@ -12,13 +12,14 @@ use cipherpass_core::crypto::random_bytes;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use cipherpass_core::unseal_biometric_slot;
 use cipherpass_core::{
-    atomic_write_file, evaluate_password, generate_keyfile_v2_xml, generate_mlkem1024_keypair,
-    generate_passphrase, generate_password, generate_totp_now, open_kdbx_bytes, pq_seal_bytes,
+    atomic_write_file, evaluate_password, export_encrypted_bitwarden_json, generate_keyfile_v2_xml,
+    generate_mlkem1024_keypair, generate_passphrase, generate_password, generate_totp_now,
+    import_bitwarden_json, import_csv, merge_kdbx_vault, open_kdbx_bytes, pq_seal_bytes,
     pq_unseal_bytes, run_vault_audit, save_kdbx_bytes, seal_biometric_slot, vault_slot_id,
     BiometricVaultCredentials, CipherAlgorithm, CustomField, EntropyReport, GeneratedSecret,
-    KdfAlgorithm, KdfConfig, MasterCredentials, MlKem1024Keypair, PassphraseGenOptions,
-    PasswordGenOptions, ProtectedString, SecurityAuditReport, TotpCode, Vault, VaultEntry,
-    VaultGroup,
+    ImportSummary, KdfAlgorithm, KdfConfig, MasterCredentials, MlKem1024Keypair,
+    PassphraseGenOptions, PasswordGenOptions, ProtectedString, SecurityAuditReport, TotpCode,
+    Vault, VaultEntry, VaultGroup,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -1123,6 +1124,238 @@ fn delete_group(
 }
 
 #[tauri::command]
+fn rename_group(
+    group_id: String,
+    name: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<GroupDto, String> {
+    let clean = name.trim();
+    if clean.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    let uuid = Uuid::parse_str(&group_id).map_err(|e| e.to_string())?;
+    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+    let sess = sess_guard
+        .as_mut()
+        .ok_or_else(|| "Vault is locked".to_string())?;
+    sess.touch();
+    if sess.vault.root_group.uuid == uuid {
+        return Err("Rename the vault itself in Settings → Vault & Key".to_string());
+    }
+    let grp = sess
+        .vault
+        .root_group
+        .find_group_mut(uuid)
+        .ok_or_else(|| "Group not found".to_string())?;
+    grp.name = clean.to_string();
+    grp.times.last_modification_time = Utc::now();
+    let dto = group_to_dto(grp);
+    sess.dirty = true;
+    persist_session(&app, sess)?;
+    Ok(dto)
+}
+
+#[tauri::command]
+fn clear_recent_vaults(app: AppHandle) -> Result<(), String> {
+    if let Ok(reg_path) = recent_vaults_file(&app) {
+        if reg_path.exists() {
+            let _ = fs::remove_file(&reg_path);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_bitwarden_json_file(
+    src_path: String,
+    export_password: Option<String>,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<ImportSummary, String> {
+    let src_loc = resolve_location(&app, &src_path, ".json")?;
+    let raw = read_bytes_from_location(&app, &src_loc)?;
+
+    let (mut vault_clone, creds_clone, loc_clone) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault must be unlocked to import".to_string())?;
+        sess.touch();
+        (
+            sess.vault.clone(),
+            MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            },
+            sess.location.clone(),
+        )
+    };
+
+    let (updated_vault, summary, saved_bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let summary = import_bitwarden_json(&raw, export_password.as_deref(), &mut vault_clone)
+            .map_err(|e| e.to_string())?;
+        let saved =
+            Zeroizing::new(save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?);
+        Ok::<_, String>((vault_clone, summary, saved))
+    })
+    .await
+    .map_err(|e| format!("Import task failed: {e}"))??;
+
+    write_bytes_to_location(&app, &loc_clone, saved_bytes.as_slice())?;
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        if let Some(ref mut sess) = *sess_guard {
+            sess.vault = updated_vault;
+            sess.dirty = false;
+        }
+    }
+
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn import_csv_file(
+    src_path: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<ImportSummary, String> {
+    let src_loc = resolve_location(&app, &src_path, ".csv")?;
+    let raw = read_bytes_from_location(&app, &src_loc)?;
+    let csv_text =
+        String::from_utf8(raw).map_err(|_| "CSV file must be valid UTF-8 text".to_string())?;
+
+    let (mut vault_clone, creds_clone, loc_clone) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault must be unlocked to import".to_string())?;
+        sess.touch();
+        (
+            sess.vault.clone(),
+            MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            },
+            sess.location.clone(),
+        )
+    };
+
+    let (updated_vault, summary, saved_bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let summary = import_csv(&csv_text, &mut vault_clone).map_err(|e| e.to_string())?;
+        let saved =
+            Zeroizing::new(save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?);
+        Ok::<_, String>((vault_clone, summary, saved))
+    })
+    .await
+    .map_err(|e| format!("CSV import task failed: {e}"))??;
+
+    write_bytes_to_location(&app, &loc_clone, saved_bytes.as_slice())?;
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        if let Some(ref mut sess) = *sess_guard {
+            sess.vault = updated_vault;
+            sess.dirty = false;
+        }
+    }
+
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn import_kdbx_into_vault(
+    src_path: String,
+    master_password: Option<String>,
+    keyfile_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<ImportSummary, String> {
+    let src_loc = resolve_location(&app, &src_path, ".kdbx")?;
+    let raw_kdbx = read_bytes_from_location(&app, &src_loc)?;
+
+    let keyfile_bytes = match keyfile_path
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => {
+            let kf_loc = resolve_location(&app, p, ".keyx")?;
+            Some(read_bytes_from_location(&app, &kf_loc)?)
+        }
+        None => None,
+    };
+    let src_creds = MasterCredentials::from_password_and_keyfile(master_password, keyfile_bytes)
+        .map_err(|e| e.to_string())?;
+
+    let (mut vault_clone, creds_clone, loc_clone) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault must be unlocked to import".to_string())?;
+        sess.touch();
+        (
+            sess.vault.clone(),
+            MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            },
+            sess.location.clone(),
+        )
+    };
+
+    let (updated_vault, summary, saved_bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let source_vault = open_kdbx_bytes(&raw_kdbx, &src_creds).map_err(|e| e.to_string())?;
+        let summary = merge_kdbx_vault(&source_vault, &mut vault_clone);
+        let saved =
+            Zeroizing::new(save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?);
+        Ok::<_, String>((vault_clone, summary, saved))
+    })
+    .await
+    .map_err(|e| format!("KDBX import task failed: {e}"))??;
+
+    write_bytes_to_location(&app, &loc_clone, saved_bytes.as_slice())?;
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        if let Some(ref mut sess) = *sess_guard {
+            sess.vault = updated_vault;
+            sess.dirty = false;
+        }
+    }
+
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn export_encrypted_json_file(
+    dest_path: String,
+    export_password: String,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<String, String> {
+    let vault_clone = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+        sess.vault.clone()
+    };
+
+    let loc = resolve_location(&app, &dest_path, ".json")?;
+    let json_bytes = tauri::async_runtime::spawn_blocking(move || {
+        export_encrypted_bitwarden_json(&vault_clone, &export_password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Encrypted JSON export task failed: {e}"))??;
+
+    write_bytes_to_location(&app, &loc, &json_bytes)?;
+    Ok(loc.display_string())
+}
+
+#[tauri::command]
 fn list_entries(
     group_id: Option<String>,
     query: Option<String>,
@@ -1744,7 +1977,7 @@ fn has_biometric_slot(path: String, app: AppHandle) -> Result<bool, String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let _ = (path, app);
-        return Ok(false);
+        Ok(false)
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1763,10 +1996,10 @@ fn enable_biometric_unlock(
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let _ = (app, state);
-        return Err(
+        Err(
             "Biometric Vault Unlock is enforced via native OS BiometricPrompt / Face ID on Android & iOS."
                 .to_string(),
-        );
+        )
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1846,9 +2079,7 @@ async fn unlock_vault_biometric(
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let _ = (path, app, state);
-        return Err(
-            "Biometric Vault Unlock is only available on Android & iOS devices.".to_string(),
-        );
+        Err("Biometric Vault Unlock is only available on Android & iOS devices.".to_string())
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1985,6 +2216,7 @@ pub fn run() {
             list_directory_folders,
             create_directory,
             list_local_vaults,
+            clear_recent_vaults,
             get_vault_status,
             create_vault,
             open_vault,
@@ -1994,7 +2226,12 @@ pub fn run() {
             generate_keyfile_to_path,
             list_groups,
             create_group,
+            rename_group,
             delete_group,
+            import_bitwarden_json_file,
+            import_csv_file,
+            import_kdbx_into_vault,
+            export_encrypted_json_file,
             list_entries,
             get_entry,
             copy_entry_password,

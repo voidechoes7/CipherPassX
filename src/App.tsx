@@ -1,13 +1,17 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronDown,
+  ChevronRight,
   Copy,
   CreditCard,
   Eraser,
   FileText,
   Folder,
+  FolderOpen,
   FolderPlus,
   KeyRound,
   Lock,
+  Pencil,
   Plus,
   Search,
   Settings,
@@ -16,9 +20,11 @@ import {
   ShieldCheck,
   Star,
   Terminal,
+  Trash2,
   User,
   Wand2,
   WifiOff,
+  X,
 } from "lucide-react";
 import { vaultApi } from "./api/vaultApi";
 import { AuditView } from "./components/AuditView";
@@ -39,6 +45,18 @@ import {
 import type { EntryDetail, EntrySummary, EntryType, GroupNode, VaultStatus } from "./types";
 
 type ActiveTab = "vault" | "totp" | "generator" | "audit" | "settings";
+
+const MOBILE_NAV_ITEMS: {
+  id: ActiveTab;
+  icon: React.FC<{ className?: string }>;
+  label: string;
+}[] = [
+  { id: "vault", icon: KeyRound, label: "Vault" },
+  { id: "totp", icon: ShieldCheck, label: "2FA" },
+  { id: "generator", icon: Wand2, label: "Gen" },
+  { id: "audit", icon: ShieldAlert, label: "Audit" },
+  { id: "settings", icon: Settings, label: "Settings" },
+];
 
 function renderEntryTypeIcon(entryType: EntryType) {
   switch (entryType) {
@@ -70,6 +88,22 @@ function entryTypeLabel(entryType: EntryType): string {
   }
 }
 
+function findGroupTrail(node: GroupNode, targetId: string): GroupNode[] | null {
+  if (node.id === targetId) return [node];
+  for (const sub of node.subgroups) {
+    const found = findGroupTrail(sub, targetId);
+    if (found) return [node, ...found];
+  }
+  return null;
+}
+
+function countGroupRecursive(node: GroupNode): number {
+  return (
+    node.entry_count +
+    node.subgroups.reduce((sum, sub) => sum + countGroupRecursive(sub), 0)
+  );
+}
+
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<ThemeId>(() => loadSavedTheme());
   const [uiStyle, setUiStyle] = useState<UiStyleId>(() => loadSavedUiStyle());
@@ -92,8 +126,24 @@ export const App: React.FC = () => {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Folder management state (create root/subfolder, rename, delete, mobile tree drawer)
+  const [showFolderBrowserMobile, setShowFolderBrowserMobile] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupParentId, setNewGroupParentId] = useState<string | null>(null);
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+  const [renameGroupText, setRenameGroupText] = useState("");
+  const [confirmDeleteGroupId, setConfirmDeleteGroupId] = useState<string | null>(null);
+
+  // Liquid Glass interactive sliding bottom dock state
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockDragging, setDockDragging] = useState(false);
+  const [dockDragPercent, setDockDragPercent] = useState<number | null>(null);
+  const [dockPreviewIdx, setDockPreviewIdx] = useState<number | null>(null);
+  const dockStartXRef = useRef<number>(0);
+  const dockMovedRef = useRef<boolean>(false);
+
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -174,6 +224,16 @@ export const App: React.FC = () => {
     }
   }, [status?.unlocked, refreshVaultData]);
 
+  const activeGroupTrail = useMemo(() => {
+    if (!groups || !selectedGroupId) return null;
+    return findGroupTrail(groups, selectedGroupId);
+  }, [groups, selectedGroupId]);
+
+  const activeFolderNode =
+    activeGroupTrail && activeGroupTrail.length > 0
+      ? activeGroupTrail[activeGroupTrail.length - 1]
+      : null;
+
   const handleLock = async () => {
     try {
       const s = await vaultApi.lockVault();
@@ -214,17 +274,107 @@ export const App: React.FC = () => {
     }
   };
 
+  const openCreateFolderForm = (parentId: string | null) => {
+    setNewGroupParentId(parentId);
+    setNewGroupName("");
+    setShowNewGroupInput(true);
+    setRenamingGroupId(null);
+    setConfirmDeleteGroupId(null);
+  };
+
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!groups || !newGroupName.trim()) return;
+    const parentTarget = newGroupParentId ?? selectedGroupId ?? groups.id;
     try {
-      await vaultApi.createGroup(groups.id, newGroupName.trim());
+      const created = await vaultApi.createGroup(parentTarget, newGroupName.trim());
       setNewGroupName("");
       setShowNewGroupInput(false);
+      setNewGroupParentId(null);
+      setSelectedGroupId(created.id);
+      setFavoritesOnly(false);
       await refreshVaultData();
+      showToast(`Folder "${created.name}" created & saved.`);
     } catch (err) {
       showToast(String(err));
     }
+  };
+
+  const handleRenameGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!renamingGroupId || !renameGroupText.trim()) return;
+    try {
+      const updated = await vaultApi.renameGroup(renamingGroupId, renameGroupText.trim());
+      setRenamingGroupId(null);
+      setRenameGroupText("");
+      await refreshVaultData();
+      showToast(`Folder renamed to "${updated.name}".`);
+    } catch (err) {
+      showToast(String(err));
+    }
+  };
+
+  const handleDeleteGroup = async (gid: string) => {
+    try {
+      await vaultApi.deleteGroup(gid);
+      if (selectedGroupId === gid) {
+        setSelectedGroupId(null);
+      }
+      setConfirmDeleteGroupId(null);
+      await refreshVaultData();
+      showToast("Folder deleted.");
+    } catch (err) {
+      showToast(String(err));
+    }
+  };
+
+  const switchMobileTab = (tabId: ActiveTab) => {
+    setActiveTab(tabId);
+    setSelectedEntry(null);
+    setCreatingNew(false);
+    setFocusTotpOnCreate(false);
+  };
+
+  // Liquid Glass touch/pointer horizontal sliding dock handlers
+  const updateDockPosition = (clientX: number) => {
+    const el = dockRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const count = MOBILE_NAV_ITEMS.length;
+    const rel = Math.max(0, Math.min(rect.width - 1, clientX - rect.left));
+    const idx = Math.min(count - 1, Math.floor((rel / rect.width) * count));
+    const clampedPct = Math.max(0, Math.min((count - 1) * 100, (rel / rect.width) * count * 100 - 50));
+    setDockDragPercent(clampedPct);
+    setDockPreviewIdx(idx);
+  };
+
+  const handleDockTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length === 0) return;
+    dockStartXRef.current = e.touches[0].clientX;
+    dockMovedRef.current = false;
+    setDockDragging(true);
+  };
+
+  const handleDockTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!dockDragging || e.touches.length === 0) return;
+    const x = e.touches[0].clientX;
+    if (Math.abs(x - dockStartXRef.current) > 8) {
+      dockMovedRef.current = true;
+    }
+    if (dockMovedRef.current) {
+      updateDockPosition(x);
+    }
+  };
+
+  const handleDockTouchEnd = () => {
+    if (dockMovedRef.current && dockPreviewIdx !== null) {
+      const target = MOBILE_NAV_ITEMS[dockPreviewIdx];
+      if (target) switchMobileTab(target.id);
+    }
+    setDockDragging(false);
+    setDockDragPercent(null);
+    setDockPreviewIdx(null);
+    dockMovedRef.current = false;
   };
 
   if (!status || !status.unlocked) {
@@ -246,36 +396,156 @@ export const App: React.FC = () => {
     selectedGroupId ?? groups?.subgroups[0]?.id ?? groups?.id ?? "";
 
   const showingEditorMobile = Boolean(selectedEntry || creatingNew);
-
-  const renderGroupTree = (node: GroupNode, depth = 0) => (
-    <div key={node.id}>
-      <button
-        type="button"
-        onClick={() => {
-          setActiveTab("vault");
-          setFavoritesOnly(false);
-          setSelectedGroupId(depth === 0 ? null : node.id);
-        }}
-        style={{ paddingLeft: `${12 + depth * 12}px` }}
-        className={`w-full flex items-center justify-between pr-3 py-1.5 rounded-lg text-xs transition ${
-          activeTab === "vault" &&
-          !favoritesOnly &&
-          ((depth === 0 && selectedGroupId === null) || selectedGroupId === node.id)
-            ? "bg-cyan-500/15 text-cyan-300 border border-cyan-400/25"
-            : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-        }`}
-      >
-        <span className="flex items-center gap-2 truncate">
-          <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-80" />
-          <span className="truncate">{depth === 0 ? "All Entries" : node.name}</span>
-        </span>
-        {node.entry_count > 0 && (
-          <span className="text-[10px] font-mono text-slate-500">{node.entry_count}</span>
-        )}
-      </button>
-      {node.subgroups.map((sub) => renderGroupTree(sub, depth + 1))}
-    </div>
+  const activeTabIdx = Math.max(
+    0,
+    MOBILE_NAV_ITEMS.findIndex((item) => item.id === activeTab)
   );
+  const sliderTransformPercent =
+    dockDragPercent !== null ? dockDragPercent : activeTabIdx * 100;
+
+  const renderGroupTree = (node: GroupNode, depth = 0, onSelectExtra?: () => void) => {
+    const isRoot = depth === 0;
+    const isSelected =
+      activeTab === "vault" &&
+      !favoritesOnly &&
+      ((isRoot && selectedGroupId === null) || selectedGroupId === node.id);
+    const totalCount = countGroupRecursive(node);
+
+    return (
+      <div key={node.id} className="space-y-0.5">
+        <div
+          style={{ paddingLeft: `${8 + depth * 12}px` }}
+          className={`group flex items-center justify-between gap-1 pr-1.5 py-1.5 rounded-lg text-xs transition ${
+            isSelected
+              ? "bg-cyan-500/15 text-cyan-300 border border-cyan-400/25"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab("vault");
+              setFavoritesOnly(false);
+              setSelectedGroupId(isRoot ? null : node.id);
+              setConfirmDeleteGroupId(null);
+              onSelectExtra?.();
+            }}
+            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+          >
+            {isSelected ? (
+              <FolderOpen className="w-3.5 h-3.5 shrink-0 cyber-accent-text" />
+            ) : (
+              <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-75" />
+            )}
+            <span className="truncate font-medium">
+              {isRoot ? "All Entries" : node.name}
+            </span>
+          </button>
+
+          <div className="flex items-center gap-1 shrink-0">
+            {totalCount > 0 && (
+              <span className="text-[10px] font-mono text-slate-500 px-1">
+                {totalCount}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openCreateFolderForm(node.id);
+              }}
+              className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-cyan-300 opacity-75 group-hover:opacity-100"
+              title={`Add subfolder inside ${isRoot ? "Vault Root" : node.name}`}
+            >
+              <FolderPlus className="w-3 h-3" />
+            </button>
+            {!isRoot && (
+              <>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingGroupId(node.id);
+                    setRenameGroupText(node.name);
+                    setShowNewGroupInput(false);
+                    setConfirmDeleteGroupId(null);
+                  }}
+                  className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-amber-300 opacity-75 group-hover:opacity-100"
+                  title="Rename folder"
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+                {confirmDeleteGroupId === node.id ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteGroup(node.id);
+                    }}
+                    className="px-1.5 py-0.5 rounded bg-rose-500/25 border border-rose-400/50 text-[9px] font-bold text-rose-200"
+                    title="Confirm delete folder"
+                  >
+                    Del?
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteGroupId(node.id);
+                    }}
+                    className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 opacity-75 group-hover:opacity-100"
+                    title="Delete folder"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {renamingGroupId === node.id && (
+          <form
+            onSubmit={handleRenameGroup}
+            style={{ paddingLeft: `${12 + depth * 12}px` }}
+            className="flex gap-1 pr-1.5 py-1"
+          >
+            <input
+              type="text"
+              value={renameGroupText}
+              onChange={(e) => setRenameGroupText(e.target.value)}
+              autoFocus
+              className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-amber-400/50 px-2 py-1 text-xs text-white"
+            />
+            <button
+              type="submit"
+              className="px-2 py-1 rounded-lg cyber-btn-primary text-[11px] font-bold"
+            >
+              OK
+            </button>
+            <button
+              type="button"
+              onClick={() => setRenamingGroupId(null)}
+              className="p-1 rounded-lg bg-slate-800 text-slate-400"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </form>
+        )}
+
+        {node.subgroups.map((sub) => renderGroupTree(sub, depth + 1, onSelectExtra))}
+      </div>
+    );
+  };
+
+  const parentFolderLabel = (() => {
+    if (!groups) return "Vault Root";
+    const pid = newGroupParentId ?? selectedGroupId;
+    if (!pid || pid === groups.id) return "Vault Root";
+    const trail = findGroupTrail(groups, pid);
+    return trail ? trail[trail.length - 1].name : "Vault Root";
+  })();
 
   return (
     <div className="h-full w-full flex flex-col app-shell overflow-hidden">
@@ -362,7 +632,7 @@ export const App: React.FC = () => {
       {/* Main Workspace */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Desktop Sidebar */}
-        <aside className="hidden md:flex w-60 flex-col border-r app-sidebar p-3 space-y-4 overflow-y-auto shrink-0">
+        <aside className="hidden md:flex w-64 flex-col border-r app-sidebar p-3 space-y-4 overflow-y-auto shrink-0">
           <nav className="space-y-1">
             <button
               type="button"
@@ -442,41 +712,55 @@ export const App: React.FC = () => {
               }`}
             >
               <Settings className="w-4 h-4" />
-              Vault, Crypto &amp; GUI
+              Vault, Import &amp; GUI
             </button>
           </nav>
 
-          {/* Groups */}
+          {/* Desktop Interactive Folder Tree */}
           <div className="pt-3 border-t border-slate-800/80 space-y-2">
             <div className="flex items-center justify-between px-2">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                Folders
+                Vault Folders
               </span>
               <button
                 type="button"
-                onClick={() => setShowNewGroupInput(!showNewGroupInput)}
-                className="text-slate-400 hover:text-cyan-300"
-                title="New Folder"
+                onClick={() => openCreateFolderForm(groups?.id ?? null)}
+                className="text-slate-400 hover:text-cyan-300 flex items-center gap-1 text-[10px] font-semibold"
+                title="Create new top-level folder"
               >
                 <FolderPlus className="w-3.5 h-3.5" />
+                New
               </button>
             </div>
 
             {showNewGroupInput && (
-              <form onSubmit={handleCreateGroup} className="flex gap-1 px-1">
-                <input
-                  type="text"
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder="Folder name..."
-                  className="flex-1 min-w-0 rounded bg-[#07090F] border border-slate-700 px-2 py-1 text-xs text-white"
-                />
-                <button
-                  type="submit"
-                  className="px-2 py-1 rounded cyber-btn-primary text-xs font-semibold"
-                >
-                  Add
-                </button>
+              <form onSubmit={handleCreateGroup} className="space-y-1.5 px-1">
+                <div className="text-[10px] text-slate-400 truncate">
+                  Inside: <span className="cyber-accent-text">{parentFolderLabel}</span>
+                </div>
+                <div className="flex gap-1">
+                  <input
+                    type="text"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="Folder name..."
+                    autoFocus
+                    className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-slate-700 px-2 py-1 text-xs text-white"
+                  />
+                  <button
+                    type="submit"
+                    className="px-2 py-1 rounded-lg cyber-btn-primary text-xs font-semibold"
+                  >
+                    Add
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewGroupInput(false)}
+                    className="p-1 rounded-lg bg-slate-800 text-slate-400"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </form>
             )}
 
@@ -505,6 +789,7 @@ export const App: React.FC = () => {
               onThemeChange={setTheme}
               onUiStyleChange={setUiStyle}
               onStatusUpdated={setStatus}
+              onVaultDataChanged={refreshVaultData}
               onCopy={handleCopy}
             />
           </main>
@@ -597,8 +882,72 @@ export const App: React.FC = () => {
                   />
                 </div>
 
-                {/* Mobile Horizontal Folder & Filter Pills Bar */}
+                {/* Active Folder Breadcrumb Bar (Visible on Mobile & Desktop when inside a folder) */}
+                {activeGroupTrail && activeGroupTrail.length > 1 && (
+                  <div className="flex items-center justify-between gap-1.5 rounded-xl bg-[#07090F] border border-slate-800 px-2.5 py-1.5 text-[11px]">
+                    <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedGroupId(null);
+                          setFavoritesOnly(false);
+                        }}
+                        className="text-slate-400 hover:text-cyan-300 shrink-0"
+                      >
+                        All
+                      </button>
+                      {activeGroupTrail.slice(1).map((node) => (
+                        <React.Fragment key={node.id}>
+                          <ChevronRight className="w-3 h-3 text-slate-500 shrink-0" />
+                          <button
+                            type="button"
+                            onClick={() => setSelectedGroupId(node.id)}
+                            className={`truncate font-medium ${
+                              node.id === selectedGroupId
+                                ? "cyber-accent-text"
+                                : "text-slate-300 hover:text-cyan-300"
+                            }`}
+                          >
+                            {node.name}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                    {activeFolderNode && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowFolderBrowserMobile(true);
+                          openCreateFolderForm(activeFolderNode.id);
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 text-cyan-300 border border-slate-700 shrink-0"
+                        title="Add subfolder here"
+                      >
+                        + Sub
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Mobile Folder Browser Toggle + Quick Pills */}
                 <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowFolderBrowserMobile(!showFolderBrowserMobile)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap border shrink-0 flex items-center gap-1 ${
+                      showFolderBrowserMobile
+                        ? "cyber-btn-primary border-transparent"
+                        : "bg-slate-800 border-slate-700 text-cyan-200"
+                    }`}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    Folders
+                    <ChevronDown
+                      className={`w-3 h-3 transition ${
+                        showFolderBrowserMobile ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -647,7 +996,10 @@ export const App: React.FC = () => {
                   ))}
                   <button
                     type="button"
-                    onClick={() => setShowNewGroupInput(!showNewGroupInput)}
+                    onClick={() => {
+                      setShowFolderBrowserMobile(true);
+                      openCreateFolderForm(selectedGroupId ?? groups?.id ?? null);
+                    }}
                     className="px-2 py-1 rounded-lg text-[11px] bg-slate-800 text-cyan-300 border border-slate-700 shrink-0"
                     title="New Folder"
                   >
@@ -655,29 +1007,66 @@ export const App: React.FC = () => {
                   </button>
                 </div>
 
-                {showNewGroupInput && (
-                  <form onSubmit={handleCreateGroup} className="flex md:hidden gap-1.5">
-                    <input
-                      type="text"
-                      value={newGroupName}
-                      onChange={(e) => setNewGroupName(e.target.value)}
-                      placeholder="New folder name..."
-                      className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-1.5 text-xs text-white"
-                    />
-                    <button
-                      type="submit"
-                      className="px-3 py-1.5 rounded-lg cyber-btn-primary text-xs font-bold"
-                    >
-                      Add
-                    </button>
-                  </form>
+                {/* Mobile Collapsible Full Folder Tree Browser (Create, Subfolder, Rename, Delete) */}
+                {showFolderBrowserMobile && groups && (
+                  <div className="md:hidden rounded-xl bg-[#07090F] border border-slate-800 p-2.5 space-y-2 max-h-64 overflow-y-auto deck-animate">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Browse &amp; Manage Vault Folders
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => openCreateFolderForm(groups.id)}
+                        className="text-[10px] font-semibold cyber-accent-text flex items-center gap-1"
+                      >
+                        <FolderPlus className="w-3 h-3" />
+                        + Root Folder
+                      </button>
+                    </div>
+
+                    {showNewGroupInput && (
+                      <form onSubmit={handleCreateGroup} className="space-y-1.5">
+                        <div className="text-[10px] text-slate-400 px-1">
+                          New folder inside:{" "}
+                          <span className="cyber-accent-text font-medium">{parentFolderLabel}</span>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            value={newGroupName}
+                            onChange={(e) => setNewGroupName(e.target.value)}
+                            placeholder="Folder name..."
+                            autoFocus
+                            className="flex-1 min-w-0 rounded-lg bg-[#0D111A] border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                          />
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 rounded-lg cyber-btn-primary text-xs font-bold"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowNewGroupInput(false)}
+                            className="p-1.5 rounded-lg bg-slate-800 text-slate-400"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    <div className="space-y-0.5">
+                      {renderGroupTree(groups, 0, () => setShowFolderBrowserMobile(false))}
+                    </div>
+                  </div>
                 )}
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
                 {entries.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500 space-y-2.5">
-                    <p>No entries match this filter.</p>
+                    <p>No entries in this folder yet.</p>
                     <button
                       type="button"
                       onClick={() => {
@@ -688,7 +1077,7 @@ export const App: React.FC = () => {
                       className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold inline-flex items-center gap-1.5"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      Create First Entry
+                      Add Entry Here
                     </button>
                   </div>
                 ) : (
@@ -820,33 +1209,43 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Mobile Bottom Navigation — adapts to Tactical, Material 3 pill, Liquid Glass floating dock, or Sliding Deck */}
-      <nav className="md:hidden safe-bottom border-t app-bottom-nav shrink-0">
-        <div className="h-14 grid grid-cols-5">
-          {[
-            { id: "vault" as const, icon: KeyRound, label: "Vault" },
-            { id: "totp" as const, icon: ShieldCheck, label: "2FA" },
-            { id: "generator" as const, icon: Wand2, label: "Gen" },
-            { id: "audit" as const, icon: ShieldAlert, label: "Audit" },
-            { id: "settings" as const, icon: Settings, label: "Settings" },
-          ].map((item) => {
+      {/* Mobile Bottom Navigation — Interactive Sliding Liquid Glass Dock & Adaptive Nav */}
+      <nav className="md:hidden safe-bottom border-t app-bottom-nav shrink-0 select-none">
+        <div
+          ref={dockRef}
+          onTouchStart={handleDockTouchStart}
+          onTouchMove={handleDockTouchMove}
+          onTouchEnd={handleDockTouchEnd}
+          onTouchCancel={handleDockTouchEnd}
+          className="relative h-14 grid grid-cols-5 touch-pan-y"
+        >
+          {/* Animated Liquid Glass Sliding Lens Pill */}
+          {uiStyle === "liquid-glass" && (
+            <div
+              className={`liquid-dock-slider ${dockDragging ? "dragging" : ""}`}
+              style={{
+                width: `${100 / MOBILE_NAV_ITEMS.length}%`,
+                transform: `translateX(${sliderTransformPercent}%) scale(${
+                  dockDragging ? 1.06 : 1
+                })`,
+              }}
+            />
+          )}
+
+          {MOBILE_NAV_ITEMS.map((item, idx) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            const isActive =
+              dockPreviewIdx !== null ? dockPreviewIdx === idx : activeTab === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => {
-                  setActiveTab(item.id);
-                  setSelectedEntry(null);
-                  setCreatingNew(false);
-                  setFocusTotpOnCreate(false);
-                }}
-                className={`flex flex-col items-center justify-center gap-0.5 text-[10px] transition ${
+                onClick={() => switchMobileTab(item.id)}
+                className={`relative z-10 flex flex-col items-center justify-center gap-0.5 text-[10px] transition ${
                   isActive ? "cyber-accent-text font-semibold" : "text-slate-400"
                 }`}
               >
-                <span className={isActive ? "nav-pill-active" : ""}>
+                <span className={isActive && uiStyle !== "liquid-glass" ? "nav-pill-active" : ""}>
                   <Icon className="w-4 h-4" />
                 </span>
                 <span>{item.label}</span>

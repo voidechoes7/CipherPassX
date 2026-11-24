@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
+  ArrowDownUp,
   Atom,
   CheckCircle2,
   Copy,
@@ -7,7 +8,9 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileJson,
   FileKey2,
+  FileSpreadsheet,
   Fingerprint,
   FolderInput,
   Info,
@@ -18,16 +21,24 @@ import {
   Save,
   Shield,
   ShieldCheck,
+  Trash2,
   Unlock,
+  Upload,
   Wand2,
 } from "lucide-react";
 import {
   isMobilePlatform,
+  loadHideRecentVaults,
+  pickOpenCsvFile,
+  pickOpenJsonFile,
+  pickOpenKdbxFile,
   pickOpenKeyfile,
   pickOpenPqFile,
+  pickSaveJsonFile,
   pickSaveKdbxFile,
   pickSaveKeyfile,
   pickSavePqFile,
+  saveHideRecentVaults,
   vaultApi,
 } from "../api/vaultApi";
 import type { ThemeId, UiStyleId } from "../themes";
@@ -50,10 +61,11 @@ interface Props {
   onThemeChange: (t: ThemeId) => void;
   onUiStyleChange: (s: UiStyleId) => void;
   onStatusUpdated: (status: VaultStatus) => void;
+  onVaultDataChanged: () => void;
   onCopy: (secret: string, label: string) => void;
 }
 
-type SettingsSection = "vault" | "crypto" | "appearance";
+type SettingsSection = "vault" | "crypto" | "interchange" | "appearance";
 
 export const SettingsView: React.FC<Props> = ({
   status,
@@ -62,6 +74,7 @@ export const SettingsView: React.FC<Props> = ({
   onThemeChange,
   onUiStyleChange,
   onStatusUpdated,
+  onVaultDataChanged,
   onCopy,
 }) => {
   const [section, setSection] = useState<SettingsSection>("vault");
@@ -76,6 +89,7 @@ export const SettingsView: React.FC<Props> = ({
   const [parallelism, setParallelism] = useState(status.kdf?.parallelism ?? 4);
   const [autoLock, setAutoLock] = useState(status.auto_lock_seconds);
   const [clipClear, setClipClear] = useState(status.clipboard_clear_seconds);
+  const [hideRecents, setHideRecents] = useState<boolean>(() => loadHideRecentVaults());
 
   // Master Password & Keyfile Rotation State
   const [currentPassword, setCurrentPassword] = useState("");
@@ -87,6 +101,17 @@ export const SettingsView: React.FC<Props> = ({
   const [keyfileAction, setKeyfileAction] = useState<"keep" | "set" | "remove">("keep");
   const [newKeyfilePath, setNewKeyfilePath] = useState("");
   const [rotatingCreds, setRotatingCreds] = useState(false);
+
+  // Import / Export State
+  const [bwJsonPath, setBwJsonPath] = useState("");
+  const [bwJsonPassword, setBwJsonPassword] = useState("");
+  const [kdbxImportPath, setKdbxImportPath] = useState("");
+  const [kdbxImportPassword, setKdbxImportPassword] = useState("");
+  const [kdbxImportKeyfile, setKdbxImportKeyfile] = useState("");
+  const [exportJsonPassword, setExportJsonPassword] = useState("");
+  const [exportJsonConfirm, setExportJsonConfirm] = useState("");
+  const [showExportPw, setShowExportPw] = useState(false);
+  const [busyInterchange, setBusyInterchange] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -103,7 +128,7 @@ export const SettingsView: React.FC<Props> = ({
   // Biometric & Folder Modal states
   const [bioEnabled, setBioEnabled] = useState(false);
   const [folderModalMode, setFolderModalMode] = useState<
-    null | "move" | "backup" | "pq-seal"
+    null | "move" | "backup" | "pq-seal" | "json-export"
   >(null);
 
   useEffect(() => {
@@ -277,13 +302,131 @@ export const SettingsView: React.FC<Props> = ({
       setFolderModalMode("backup");
       return;
     }
-    const dest = await pickSaveKdbxFile("CipherPass_Backup.kdbx");
+    const dest = await pickSaveKdbxFile(`${safeBaseName}_Backup.kdbx`);
     if (!dest) return;
     try {
       const saved = await vaultApi.exportVaultBackup(dest);
       setMessage(`Atomic KDBX 4 backup exported to ${saved}`);
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  const handleExportEncryptedJson = async () => {
+    setMessage(null);
+    setError(null);
+    if (exportJsonPassword.length < 8) {
+      setError("Choose an export password of at least 8 characters for Encrypted JSON.");
+      return;
+    }
+    if (exportJsonPassword !== exportJsonConfirm) {
+      setError("Export passwords do not match.");
+      return;
+    }
+    if (isMobilePlatform()) {
+      setFolderModalMode("json-export");
+      return;
+    }
+    const dest = await pickSaveJsonFile(`${safeBaseName}_Encrypted.json`);
+    if (!dest) return;
+    setBusyInterchange(true);
+    try {
+      const saved = await vaultApi.exportEncryptedJsonFile(dest, exportJsonPassword);
+      setExportJsonPassword("");
+      setExportJsonConfirm("");
+      setMessage(
+        `Cross-platform Encrypted JSON (Argon2id + AES-256-CBC + HMAC-SHA256) saved to ${saved}`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusyInterchange(false);
+    }
+  };
+
+  const handleImportBitwardenJson = async () => {
+    setMessage(null);
+    setError(null);
+    let src = bwJsonPath.trim();
+    if (!src) {
+      const picked = await pickOpenJsonFile();
+      if (!picked) return;
+      src = picked;
+      setBwJsonPath(picked);
+    }
+    setBusyInterchange(true);
+    try {
+      const summary = await vaultApi.importBitwardenJsonFile(
+        src,
+        bwJsonPassword.trim() || null
+      );
+      const updated = await vaultApi.getStatus();
+      onStatusUpdated(updated);
+      onVaultDataChanged();
+      setBwJsonPassword("");
+      setMessage(
+        `Imported ${summary.imported_entries} entries & ${summary.created_folders} folders from ${summary.source_format}. Saved atomically to your KDBX 4 vault!`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusyInterchange(false);
+    }
+  };
+
+  const handleImportCsv = async () => {
+    setMessage(null);
+    setError(null);
+    const picked = await pickOpenCsvFile();
+    if (!picked) return;
+    setBusyInterchange(true);
+    try {
+      const summary = await vaultApi.importCsvFile(picked);
+      const updated = await vaultApi.getStatus();
+      onStatusUpdated(updated);
+      onVaultDataChanged();
+      setMessage(
+        `Imported ${summary.imported_entries} entries & ${summary.created_folders} folders from ${summary.source_format}.`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusyInterchange(false);
+    }
+  };
+
+  const handleImportKdbx = async () => {
+    setMessage(null);
+    setError(null);
+    let src = kdbxImportPath.trim();
+    if (!src) {
+      const picked = await pickOpenKdbxFile();
+      if (!picked) return;
+      src = picked;
+      setKdbxImportPath(picked);
+    }
+    if (!kdbxImportPassword && !kdbxImportKeyfile.trim()) {
+      setError("Enter the Master Password (and/or Keyfile) of the KeePass .kdbx file to merge.");
+      return;
+    }
+    setBusyInterchange(true);
+    try {
+      const summary = await vaultApi.importKdbxIntoVault(
+        src,
+        kdbxImportPassword || null,
+        kdbxImportKeyfile.trim() || null
+      );
+      const updated = await vaultApi.getStatus();
+      onStatusUpdated(updated);
+      onVaultDataChanged();
+      setKdbxImportPassword("");
+      setMessage(
+        `Merged ${summary.imported_entries} entries & ${summary.created_folders} folders from KeePass KDBX 4 into your open vault!`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusyInterchange(false);
     }
   };
 
@@ -298,7 +441,7 @@ export const SettingsView: React.FC<Props> = ({
       setFolderModalMode("pq-seal");
       return;
     }
-    const dest = await pickSavePqFile("CipherPass_QuantumBackup.kdbx.pq");
+    const dest = await pickSavePqFile(`${safeBaseName}_Quantum.kdbx.pq`);
     if (!dest) return;
     setSealingPq(true);
     try {
@@ -340,22 +483,23 @@ export const SettingsView: React.FC<Props> = ({
 
   return (
     <div className="p-3 sm:p-6 max-w-3xl mx-auto space-y-5">
-      {/* Header + Segmented Section Switcher */}
+      {/* Header + 4-Section Segmented Switcher */}
       <div className="space-y-3">
         <div>
           <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
             <Shield className="w-5 h-5 cyber-accent-text" />
-            Vault Properties, Crypto &amp; GUI
+            Vault Properties, Migration &amp; GUI
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Inspect or modify this vault&apos;s Master Password, encryption protocol, post-quantum armor, and visual style.
+            Manage Master Password, encryption protocol, Bitwarden/KeePass migration, encrypted exports, and themes.
           </p>
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#0D111A] border border-slate-800">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-[#0D111A] border border-slate-800">
           {[
             { id: "vault" as const, label: "Vault & Key", icon: Database },
             { id: "crypto" as const, label: "Crypto & PQ", icon: Atom },
+            { id: "interchange" as const, label: "Import / Export", icon: ArrowDownUp },
             { id: "appearance" as const, label: "Themes & GUI", icon: Palette },
           ].map((tab) => {
             const Icon = tab.icon;
@@ -394,7 +538,7 @@ export const SettingsView: React.FC<Props> = ({
       )}
 
       {/* ============================================================
-          TAB 1: VAULT PROPERTIES, MASTER PASSWORD & BACKUPS
+          TAB 1: VAULT PROPERTIES, MASTER PASSWORD & PRIVACY
          ============================================================ */}
       {section === "vault" && (
         <div className="space-y-5 deck-animate">
@@ -492,6 +636,61 @@ export const SettingsView: React.FC<Props> = ({
               {saving ? "Saving..." : "Save Vault Details"}
             </button>
           </form>
+
+          {/* Privacy Controls: Hide/Show Recent Vaults */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  {hideRecents ? (
+                    <EyeOff className="w-4 h-4 cyber-accent-text" />
+                  ) : (
+                    <Eye className="w-4 h-4 cyber-accent-text" />
+                  )}
+                  Unlock Screen Privacy (Recent Vaults)
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                  Hide the list of recent &amp; saved vault files on the Unlock Screen so vault names are not exposed.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !hideRecents;
+                  setHideRecents(next);
+                  saveHideRecentVaults(next);
+                  setMessage(
+                    next
+                      ? "Recent vaults are now hidden on the Unlock Screen."
+                      : "Recent vaults are now visible on the Unlock Screen."
+                  );
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                  hideRecents
+                    ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
+                    : "bg-slate-800 border-slate-700 text-slate-300"
+                }`}
+              >
+                {hideRecents ? "Hidden (Private)" : "Visible"}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                setError(null);
+                try {
+                  await vaultApi.clearRecentVaults();
+                  setMessage("Recent vaults history wiped.");
+                } catch (err) {
+                  setError(String(err));
+                }
+              }}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 inline-flex items-center gap-1.5 transition"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              Clear Recent Vaults History
+            </button>
+          </div>
 
           {/* Change Master Password & Keyfile */}
           <form
@@ -730,9 +929,9 @@ export const SettingsView: React.FC<Props> = ({
             </div>
           )}
 
-          {/* Location, Move & Backup */}
+          {/* Move Vault & Keyfile */}
           <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3">
-            <h3 className="text-sm font-bold text-white">File Location, Backup &amp; Keyfile</h3>
+            <h3 className="text-sm font-bold text-white">File Location &amp; Keyfile</h3>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -741,14 +940,6 @@ export const SettingsView: React.FC<Props> = ({
               >
                 <FolderInput className="w-4 h-4" />
                 Move Vault Folder
-              </button>
-              <button
-                type="button"
-                onClick={handleExportBackup}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-cyan-300 font-medium flex items-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                Export .kdbx Backup
               </button>
               <button
                 type="button"
@@ -792,10 +983,10 @@ export const SettingsView: React.FC<Props> = ({
                 </div>
                 <p className="text-slate-300">
                   Uses <strong>{status.cipher ?? "ChaCha20"} (256-bit)</strong> or{" "}
-                  <strong>AES-256</strong> + <strong>Argon2id</strong>. Why only those two?
-                  256-bit symmetric ciphers are <strong>already quantum-resistant</strong> (Grover&apos;s
-                  algorithm leaves 128-bit quantum security, unbreakable per NIST) and keep your{" "}
-                  <code className="text-cyan-300">.kdbx</code> 100% compatible with KeePassXC &amp; KeePassDX.
+                  <strong>AES-256</strong> + <strong>Argon2id</strong>. 256-bit symmetric ciphers
+                  are <strong>already quantum-resistant</strong> (128-bit Grover security per NIST)
+                  and keep your <code className="text-cyan-300">.kdbx</code> 100% compatible with
+                  KeePassXC &amp; KeePassDX.
                 </p>
               </div>
 
@@ -809,11 +1000,10 @@ export const SettingsView: React.FC<Props> = ({
                   </span>
                 </div>
                 <p className="text-slate-300">
-                  Real lattice-based NIST FIPS 203 (Category 5) asymmetric encryption wrapped around
+                  Real lattice-based NIST FIPS 203 (Category 5) asymmetric envelope wrapped around
                   your <code className="text-cyan-300">.kdbx</code> to create a double-armored{" "}
                   <code className="text-violet-300">.kdbx.pq</code> file for cloud sync or cold
-                  backups. Even if someone steals the file, they need both your ML-KEM-1024 Secret Key
-                  and your Master Password.
+                  backups.
                 </p>
               </div>
             </div>
@@ -970,7 +1160,7 @@ export const SettingsView: React.FC<Props> = ({
                   Layer 2 · Post-Quantum Vault Armor (.kdbx.pq)
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  3-step workflow: (1) Generate keys &amp; save your Secret Key offline, (2) Seal your vault to <code className="text-violet-300">.kdbx.pq</code>, (3) Unseal anytime back to <code className="text-cyan-300">.kdbx</code>.
+                  3-step workflow: (1) Generate keys &amp; save Secret Key offline, (2) Seal vault to <code className="text-violet-300">.kdbx.pq</code>, (3) Unseal anytime back to <code className="text-cyan-300">.kdbx</code>.
                 </p>
               </div>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300 border border-violet-400/30 shrink-0">
@@ -1098,7 +1288,261 @@ export const SettingsView: React.FC<Props> = ({
       )}
 
       {/* ============================================================
-          TAB 3: APPEARANCE — 4 COMPLETE GUI STYLES + 9 LIGHT/DARK THEMES
+          TAB 3: IMPORT (BITWARDEN / KEEPASS / CSV) & ENCRYPTED EXPORTS
+         ============================================================ */}
+      {section === "interchange" && (
+        <div className="space-y-5 deck-animate">
+          {/* Import from Bitwarden (JSON plain / encrypted + CSV) */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Upload className="w-4 h-4 cyber-accent-text" />
+                  Import from Bitwarden (JSON / Encrypted JSON / CSV)
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                  Migrate 100% offline from Bitwarden. Preserves folders (including nested{" "}
+                  <code className="text-cyan-300">Parent/Child</code>), Logins, 2FA/TOTP codes,
+                  Cards, Secure Notes, and custom fields.
+                </p>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 shrink-0">
+                OFFLINE
+              </span>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={bwJsonPath}
+                  onChange={(e) => setBwJsonPath(e.target.value)}
+                  placeholder="Select Bitwarden .json (plain or password-protected encrypted)..."
+                  className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700 px-3 py-2 text-xs font-mono text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await pickOpenJsonFile();
+                    if (picked) setBwJsonPath(picked);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 shrink-0"
+                >
+                  Browse .json
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Export Password (only required if the Bitwarden .json is Password-Protected Encrypted)
+                </label>
+                <input
+                  type="password"
+                  value={bwJsonPassword}
+                  onChange={(e) => setBwJsonPassword(e.target.value)}
+                  placeholder="Leave blank for unencrypted Bitwarden JSON..."
+                  autoComplete="off"
+                  className="w-full rounded-xl bg-[#07090F] border border-slate-700 px-3 py-2 text-xs font-mono text-white"
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={busyInterchange}
+                  onClick={handleImportBitwardenJson}
+                  className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold flex items-center gap-1.5 transition disabled:opacity-50"
+                >
+                  <FileJson className="w-3.5 h-3.5" />
+                  {busyInterchange ? "Importing..." : "Import Bitwarden / Encrypted .json"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busyInterchange}
+                  onClick={handleImportCsv}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 font-medium flex items-center gap-1.5 transition"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  Import CSV (Bitwarden / KeePass)
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* KeePass .kdbx Compatibility & Merge */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3.5">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Database className="w-4 h-4 text-emerald-400" />
+                Import / Merge KeePass (.kdbx) Vault
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                CipherPass opens <strong>KeePass 2.x, KeePassXC &amp; KeePassDX (KDBX 4 / 4.1)</strong>{" "}
+                files natively from the Unlock Screen. You can also merge another <code className="text-cyan-300">.kdbx</code> file directly into this open vault below:
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={kdbxImportPath}
+                onChange={(e) => setKdbxImportPath(e.target.value)}
+                placeholder="Select external KeePass .kdbx file to merge..."
+                className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700 px-3 py-2 text-xs font-mono text-slate-200"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const picked = await pickOpenKdbxFile();
+                  if (picked) setKdbxImportPath(picked);
+                }}
+                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 shrink-0"
+              >
+                Browse .kdbx
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <input
+                type="password"
+                value={kdbxImportPassword}
+                onChange={(e) => setKdbxImportPassword(e.target.value)}
+                placeholder="Source .kdbx Master Password..."
+                autoComplete="off"
+                className="w-full rounded-xl bg-[#07090F] border border-slate-700 px-3 py-2 text-xs font-mono text-white"
+              />
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={kdbxImportKeyfile}
+                  onChange={(e) => setKdbxImportKeyfile(e.target.value)}
+                  placeholder="Optional source Keyfile..."
+                  className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700 px-3 py-2 text-xs font-mono text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await pickOpenKeyfile();
+                    if (picked) setKdbxImportKeyfile(picked);
+                  }}
+                  className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 shrink-0"
+                >
+                  Key
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={busyInterchange}
+              onClick={handleImportKdbx}
+              className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-xs text-emerald-200 font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {busyInterchange ? "Merging..." : "Merge KeePass .kdbx Into Current Vault"}
+            </button>
+          </div>
+
+          {/* Cross-Platform Encrypted Exports (With Security Comparison) */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-4 border-cyan-500/30">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Download className="w-4 h-4 cyber-accent-text" />
+                Cross-Platform Encrypted Export
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                Never export plaintext passwords. Choose the encrypted format that fits your workflow:
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px] leading-snug">
+              <div className="rounded-xl bg-[#07090F] border border-cyan-500/30 p-2.5 space-y-1">
+                <div className="font-bold text-cyan-300">Encrypted .json (Bitwarden v2)</div>
+                <div className="text-slate-400">
+                  Argon2id + AES-256-CBC + HMAC-SHA256. Opens in CipherPass, Bitwarden, Vaultwarden &amp; KeePassXC.
+                </div>
+              </div>
+              <div className="rounded-xl bg-[#07090F] border border-emerald-500/30 p-2.5 space-y-1">
+                <div className="font-bold text-emerald-300">KDBX 4 (.kdbx) · Best Daily</div>
+                <div className="text-slate-400">
+                  Industry standard ChaCha20/AES-256 + Argon2id. Opens natively across all KeePass apps.
+                </div>
+              </div>
+              <div className="rounded-xl bg-[#07090F] border border-violet-500/30 p-2.5 space-y-1">
+                <div className="font-bold text-violet-300">Quantum Armor (.kdbx.pq)</div>
+                <div className="text-slate-400">
+                  Double-layered NIST FIPS 203 ML-KEM-1024 + KDBX 4. Strongest for untrusted cloud backups.
+                </div>
+              </div>
+            </div>
+
+            {/* Password-Protected Encrypted JSON Form */}
+            <div className="rounded-xl bg-[#07090F] border border-slate-800 p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-white">
+                  Export Password-Protected Encrypted JSON (.json)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowExportPw(!showExportPw)}
+                  className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1"
+                >
+                  {showExportPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showExportPw ? "Hide" : "Show"}
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <input
+                  type={showExportPw ? "text" : "password"}
+                  value={exportJsonPassword}
+                  onChange={(e) => setExportJsonPassword(e.target.value)}
+                  placeholder="Export encryption password (≥8 chars)..."
+                  autoComplete="off"
+                  className="w-full rounded-xl bg-[#0D111A] border border-slate-700 px-3 py-2 text-xs font-mono text-white"
+                />
+                <input
+                  type={showExportPw ? "text" : "password"}
+                  value={exportJsonConfirm}
+                  onChange={(e) => setExportJsonConfirm(e.target.value)}
+                  placeholder="Confirm export password..."
+                  autoComplete="off"
+                  className="w-full rounded-xl bg-[#0D111A] border border-slate-700 px-3 py-2 text-xs font-mono text-white"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={busyInterchange}
+                  onClick={handleExportEncryptedJson}
+                  className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold flex items-center gap-1.5 transition disabled:opacity-50"
+                >
+                  <FileJson className="w-3.5 h-3.5" />
+                  {busyInterchange ? "Encrypting..." : "Export Encrypted .json"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportBackup}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-emerald-300 font-medium flex items-center gap-1.5 transition"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Export .kdbx Backup
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSection("crypto")}
+                  className="px-3.5 py-2 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-400/35 text-xs text-violet-200 font-medium flex items-center gap-1.5 transition"
+                >
+                  <Atom className="w-3.5 h-3.5" />
+                  Seal .kdbx.pq (Quantum)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================
+          TAB 4: APPEARANCE — 4 COMPLETE GUI STYLES + 9 LIGHT/DARK THEMES
          ============================================================ */}
       {section === "appearance" && (
         <div className="space-y-5 deck-animate">
@@ -1106,7 +1550,7 @@ export const SettingsView: React.FC<Props> = ({
             <div>
               <h3 className="text-sm font-bold text-white">Graphic User Interface Style (4)</h3>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Transform the entire app layout, card geometry, shadows, glass blur, and motion language instantly.
+                Transform the entire app layout, card geometry, shadows, Liquid Glass sliding dock, and motion language instantly.
               </p>
             </div>
             <UiStylePicker uiStyle={uiStyle} onChange={onUiStyleChange} />
@@ -1124,19 +1568,29 @@ export const SettingsView: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Shared Folder Picker Modal for Move / Backup / PQ Seal */}
+      {/* Shared Folder Picker Modal for Move / Backup / PQ Seal / Encrypted JSON Export */}
       <FolderPickerModal
         open={folderModalMode !== null}
         title={
-          folderModalMode === "pq-seal"
+          folderModalMode === "json-export"
+            ? "Choose Folder for Encrypted .json Export"
+            : folderModalMode === "pq-seal"
             ? "Choose Folder for Quantum .kdbx.pq Backup"
             : folderModalMode === "backup"
             ? "Choose Folder for .kdbx Backup"
             : "Move Vault to Another Folder"
         }
-        requiredExtension={folderModalMode === "pq-seal" ? ".kdbx.pq" : ".kdbx"}
+        requiredExtension={
+          folderModalMode === "json-export"
+            ? ".json"
+            : folderModalMode === "pq-seal"
+            ? ".kdbx.pq"
+            : ".kdbx"
+        }
         defaultFileName={
-          folderModalMode === "pq-seal"
+          folderModalMode === "json-export"
+            ? `${safeBaseName}_Encrypted.json`
+            : folderModalMode === "pq-seal"
             ? `${safeBaseName}_Quantum.kdbx.pq`
             : folderModalMode === "backup"
             ? `${safeBaseName}_Backup.kdbx`
@@ -1161,11 +1615,23 @@ export const SettingsView: React.FC<Props> = ({
                 pqPubKey.trim()
               );
               setMessage(`Vault sealed with FIPS 203 ML-KEM-1024 to ${saved}`);
+            } else if (mode === "json-export") {
+              setBusyInterchange(true);
+              const saved = await vaultApi.exportEncryptedJsonFile(
+                destPath,
+                exportJsonPassword
+              );
+              setExportJsonPassword("");
+              setExportJsonConfirm("");
+              setMessage(
+                `Encrypted JSON (Argon2id + AES-256-CBC + HMAC-SHA256) exported to ${saved}`
+              );
             }
           } catch (err) {
             setError(String(err));
           } finally {
             setSealingPq(false);
+            setBusyInterchange(false);
           }
         }}
         onClose={() => setFolderModalMode(null)}
@@ -1177,7 +1643,7 @@ export const SettingsView: React.FC<Props> = ({
           CipherPass · All Rights Reserved — Private Personal Use
         </div>
         <div>
-          Engine: Pure Rust (<code className="text-cyan-300">#![forbid(unsafe_code)]</code>), KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024, zero telemetry, zero network sockets.
+          Engine: Pure Rust (<code className="text-cyan-300">#![forbid(unsafe_code)]</code>), KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 + Bitwarden Encrypted JSON v2, zero telemetry, zero network sockets.
         </div>
       </div>
     </div>

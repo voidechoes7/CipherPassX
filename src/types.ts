@@ -198,3 +198,10 @@ export interface MlKem1024Keypair {
   secret_key_b64: string;
   fingerprint: string;
 }
+
+export interface ImportSummary {
+  source_format: string;
+  imported_entries: number;
+  created_folders: number;
+  skipped_items: number;
+}

@@ -10,6 +10,7 @@ pub mod biometric_slot;
 pub mod crypto;
 pub mod error;
 pub mod generator;
+pub mod interchange;
 pub mod kdbx;
 pub mod kdbx_xml;
 pub mod model;
@@ -30,6 +31,10 @@ pub use error::{CipherPassError, Result};
 pub use generator::{
     evaluate_password, generate_passphrase, generate_password, EntropyReport, GeneratedSecret,
     PassphraseGenOptions, PasswordGenOptions,
+};
+pub use interchange::{
+    export_encrypted_bitwarden_json, import_bitwarden_json, import_csv, merge_kdbx_vault,
+    ImportSummary,
 };
 pub use kdbx::{
     atomic_write_file, open_kdbx_bytes, open_kdbx_file, save_kdbx_bytes, save_kdbx_file_atomic,
