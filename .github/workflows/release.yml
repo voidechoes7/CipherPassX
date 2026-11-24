@@ -148,6 +148,16 @@ jobs:
                   tp = re.sub(r"tauri\.android\.versionName=.*", f"tauri.android.versionName={ver}", tp)
               open(tauri_props, "w", encoding="utf-8").write(tp)
               print(f"Patched tauri.properties: versionCode={ver_code}, versionName={ver}")
+          # 4. Install custom MainActivity.kt with All Files Access (MANAGE_EXTERNAL_STORAGE)
+          #    direct settings launcher + native Android OpenDocumentTree folder picker bridge
+          import shutil
+          src_activity = "src-tauri/android-templates/MainActivity.kt"
+          dst_activity = "src-tauri/gen/android/app/src/main/java/com/voidechoes7/cipherpass/MainActivity.kt"
+          if not os.path.exists(src_activity):
+              raise RuntimeError(f"Missing {src_activity}")
+          os.makedirs(os.path.dirname(dst_activity), exist_ok=True)
+          shutil.copyfile(src_activity, dst_activity)
+          print(f"Installed custom MainActivity.kt -> {dst_activity}")
           PYEOF
 
           npx tauri android build --apk --target aarch64
@@ -269,4 +279,4 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" dist-release/* \
             --title "CipherPass $TAG" \
-            --notes "CipherPass $TAG — 100% Offline KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 Password Manager. Includes In-App Folder Browser & Move Vault (any phone/PC folder), fixed Android safe-area alignment & dark status bar, non-blocking Argon2id, Biometric Vault Unlock bound to Master Key, structured Entry Editor templates, Mobile Folder Pills, 1-tap Quick-Copy, and SHA256SUMS.txt integrity verification."
+            --notes "CipherPass $TAG — 100% Offline KDBX 4 / 4.1 + NIST FIPS 203 ML-KEM-1024 Password Manager. Fixes Android Create Vault folder selection to open the In-App Folder Browser (/storage/emulated/0) with a direct 'Grant All Files Access' (MANAGE_EXTERNAL_STORAGE) button, auto-refresh on return from Android Settings, and an alternative Native Android Folder Picker (OpenDocumentTree) + SAF Save As. Signed with persistent RSA-4096 keystore & monotonic versionCode for seamless in-place updates over v0.4.1."

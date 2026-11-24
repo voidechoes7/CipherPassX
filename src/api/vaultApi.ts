@@ -23,6 +23,18 @@ import type {
   VaultStatus,
 } from "../types";
 
+interface CipherPassAndroidBridge {
+  hasAllFilesAccess?: () => boolean;
+  requestAllFilesAccess?: () => boolean;
+  pickNativeFolder?: (defaultFileName: string) => boolean;
+}
+
+declare global {
+  interface Window {
+    CipherPassAndroid?: CipherPassAndroidBridge;
+  }
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -30,6 +42,99 @@ export function isTauriRuntime(): boolean {
 export function isMobilePlatform(): boolean {
   if (typeof navigator === "undefined") return false;
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+export function isAndroidPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android/i.test(navigator.userAgent);
+}
+
+export function hasAndroidStorageBridge(): boolean {
+  return typeof window !== "undefined" && Boolean(window.CipherPassAndroid);
+}
+
+export function hasAndroidAllFilesAccess(): boolean {
+  if (!isAndroidPlatform()) return true;
+  try {
+    if (window.CipherPassAndroid?.hasAllFilesAccess) {
+      return Boolean(window.CipherPassAndroid.hasAllFilesAccess());
+    }
+  } catch {
+    // Fallback to Rust writable checks
+  }
+  return false;
+}
+
+export function requestAndroidAllFilesAccess(): boolean {
+  if (!isAndroidPlatform()) return false;
+  try {
+    if (window.CipherPassAndroid?.requestAllFilesAccess) {
+      return Boolean(window.CipherPassAndroid.requestAllFilesAccess());
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+export function onAndroidStoragePermissionChanged(
+  cb: (granted: boolean) => void
+): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (ev: Event) => {
+    const custom = ev as CustomEvent<{ granted?: boolean }>;
+    cb(Boolean(custom.detail?.granted));
+  };
+  window.addEventListener("cipherpass-storage-permission-changed", handler);
+  return () =>
+    window.removeEventListener("cipherpass-storage-permission-changed", handler);
+}
+
+export function pickNativeAndroidFolder(
+  defaultFileName = "CipherPass_Vault.kdbx"
+): Promise<{ path: string | null; error: string | null }> {
+  if (
+    typeof window === "undefined" ||
+    !window.CipherPassAndroid?.pickNativeFolder
+  ) {
+    return Promise.resolve({
+      path: null,
+      error: "Native Android folder picker is unavailable on this platform.",
+    });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const handler = (ev: Event) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("cipherpass-native-folder-picked", handler);
+      const custom = ev as CustomEvent<{ path?: string | null; error?: string | null }>;
+      resolve({
+        path: custom.detail?.path ?? null,
+        error: custom.detail?.error ?? null,
+      });
+    };
+
+    window.addEventListener("cipherpass-native-folder-picked", handler);
+    try {
+      const launched = window.CipherPassAndroid?.pickNativeFolder?.(defaultFileName);
+      if (!launched && !settled) {
+        settled = true;
+        window.removeEventListener("cipherpass-native-folder-picked", handler);
+        resolve({
+          path: null,
+          error: "Could not launch the native Android folder picker.",
+        });
+      }
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        window.removeEventListener("cipherpass-native-folder-picked", handler);
+        resolve({ path: null, error: String(err) });
+      }
+    }
+  });
 }
 
 export async function checkBiometricAvailable(): Promise<boolean> {

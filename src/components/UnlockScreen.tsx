@@ -118,9 +118,7 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
       const sep = defaultDir.includes("\\") ? "\\" : "/";
       const expected = `${defaultDir}${sep}${safeName}.kdbx`;
       setVaultPath((curr) =>
-        !curr || curr.startsWith(defaultDir) || curr.startsWith("content://")
-          ? expected
-          : curr
+        !curr || curr.startsWith(defaultDir) ? expected : curr
       );
     }
   }, [mode, databaseName, defaultDir]);
@@ -145,6 +143,10 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
 
   const handleBrowseVault = async () => {
     setError(null);
+    if (mode === "create" && isMobilePlatform()) {
+      setShowFolderModal(true);
+      return;
+    }
     const safeName =
       databaseName
         .trim()
@@ -159,6 +161,10 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
 
   const handlePickFolder = async () => {
     setError(null);
+    if (isMobilePlatform()) {
+      setShowFolderModal(true);
+      return;
+    }
     const folder = await pickFolder();
     if (!folder) return;
     const safeName =
@@ -440,14 +446,15 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
                 className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 shrink-0 transition"
               >
                 <FolderOpen className="w-4 h-4 text-cyan-400" />
-                {mode === "create" && isMobilePlatform() ? "Save As" : "Browse"}
+                {mode === "create" && isMobilePlatform() ? "Choose Folder" : "Browse"}
               </button>
             </div>
             {mode === "create" && isMobilePlatform() && (
               <p className="text-[10px] text-slate-400 mt-1 leading-snug">
-                Default saves securely inside app storage (recommended). If you tap{" "}
-                <span className="text-cyan-300 font-medium">Save As</span>, open your target folder and tap{" "}
-                <span className="text-slate-200 font-medium">Save</span> at the bottom.
+                Default saves inside app storage. Tap{" "}
+                <span className="text-cyan-300 font-medium">Choose Folder</span> to browse all
+                folders in <code className="text-slate-300">/storage/emulated/0</code> (or use the
+                native Android folder picker).
               </p>
             )}
           </div>

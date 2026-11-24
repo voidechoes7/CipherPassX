@@ -561,7 +561,7 @@ fn get_storage_roots(app: AppHandle) -> Result<Vec<StorageRootDto>, String> {
             ("Download", "/storage/emulated/0/Download"),
         ] {
             let pb = PathBuf::from(p);
-            if pb.exists() {
+            if pb.exists() || p == "/storage/emulated/0" {
                 roots.push(StorageRootDto {
                     label: label.to_string(),
                     path: p.to_string(),
@@ -607,15 +607,25 @@ fn get_storage_roots(app: AppHandle) -> Result<Vec<StorageRootDto>, String> {
 
 #[tauri::command]
 fn list_directory_folders(path: String) -> FolderListingDto {
-    let pb = PathBuf::from(path.trim());
-    let parent_path = pb.parent().and_then(|p| {
-        let s = p.to_string_lossy().to_string();
-        if s.is_empty() || s == path.trim() {
-            None
-        } else {
-            Some(s)
-        }
-    });
+    let trimmed = path.trim();
+    let pb = PathBuf::from(trimmed);
+    #[cfg(target_os = "android")]
+    let at_android_storage_root = trimmed.trim_end_matches('/') == "/storage/emulated/0";
+    #[cfg(not(target_os = "android"))]
+    let at_android_storage_root = false;
+
+    let parent_path = if at_android_storage_root {
+        None
+    } else {
+        pb.parent().and_then(|p| {
+            let s = p.to_string_lossy().to_string();
+            if s.is_empty() || s == trimmed {
+                None
+            } else {
+                Some(s)
+            }
+        })
+    };
 
     let writable = test_dir_writable(&pb);
     match fs::read_dir(&pb) {
