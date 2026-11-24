@@ -21,6 +21,7 @@ use cipherpass_core::{
     VaultGroup,
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
@@ -317,8 +318,16 @@ pub struct VaultStatusDto {
     pub unlocked: bool,
     pub path: Option<String>,
     pub database_name: Option<String>,
+    pub database_description: Option<String>,
     pub cipher: Option<CipherAlgorithm>,
+    pub inner_cipher: Option<String>,
+    pub kdbx_version: Option<String>,
     pub kdf: Option<KdfConfig>,
+    pub has_master_password: bool,
+    pub has_keyfile: bool,
+    pub keyfile_path: Option<String>,
+    pub compression: bool,
+    pub pq_armor_available: bool,
     pub entry_count: usize,
     pub dirty: bool,
     pub auto_lock_seconds: u64,
@@ -355,6 +364,7 @@ pub struct HistoryItemDto {
 pub struct EntrySummaryDto {
     pub id: String,
     pub group_id: String,
+    pub entry_type: String,
     pub title: String,
     pub username: String,
     pub url: String,
@@ -424,10 +434,82 @@ pub struct EntryUpsertRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecuritySettingsRequest {
+    pub database_name: Option<String>,
+    pub database_description: Option<String>,
     pub cipher: Option<CipherAlgorithm>,
     pub kdf: Option<KdfConfig>,
     pub auto_lock_seconds: Option<u64>,
     pub clipboard_clear_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangeMasterCredentialsRequest {
+    pub current_password: Option<String>,
+    pub new_password: Option<String>,
+    /// "keep" | "set" | "remove"
+    pub keyfile_action: String,
+    pub new_keyfile_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeCredentialsResultDto {
+    pub status: VaultStatusDto,
+    pub biometric_reset: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PqSelfTestResultDto {
+    pub passed: bool,
+    pub algorithm: String,
+    pub public_key_bytes: usize,
+    pub secret_key_bytes: usize,
+    pub ciphertext_bytes: usize,
+    pub elapsed_ms: u64,
+    pub fingerprint: String,
+}
+
+fn infer_entry_type(e: &VaultEntry) -> String {
+    if let Some(explicit) = e
+        .custom_fields
+        .iter()
+        .find(|f| f.key.eq_ignore_ascii_case("EntryType"))
+        .map(|f| f.value.expose().trim().to_lowercase())
+    {
+        if matches!(
+            explicit.as_str(),
+            "login" | "card" | "totp" | "dev" | "note"
+        ) {
+            return explicit;
+        }
+    }
+
+    let has_field = |needle: &str| {
+        e.custom_fields
+            .iter()
+            .any(|f| f.key.eq_ignore_ascii_case(needle))
+    };
+
+    if has_field("Card Number") || has_field("CVV") || has_field("IBAN / Account") {
+        return "card".to_string();
+    }
+    if has_field("API Token")
+        || has_field("SSH Passphrase")
+        || has_field("Private Key")
+        || has_field("Public Key")
+    {
+        return "dev".to_string();
+    }
+    if e.totp_uri().is_some() && e.password.expose().is_empty() {
+        return "totp".to_string();
+    }
+    if (has_field("Recovery Seed") || !e.notes.trim().is_empty())
+        && e.password.expose().is_empty()
+        && e.username.trim().is_empty()
+        && e.url.trim().is_empty()
+    {
+        return "note".to_string();
+    }
+    "login".to_string()
 }
 
 fn group_to_dto(g: &VaultGroup) -> GroupDto {
@@ -446,6 +528,7 @@ fn entry_to_summary(group_id: Uuid, e: &VaultEntry) -> EntrySummaryDto {
     EntrySummaryDto {
         id: e.uuid.to_string(),
         group_id: group_id.to_string(),
+        entry_type: infer_entry_type(e),
         title: e.title.clone(),
         username: e.username.clone(),
         url: e.url.clone(),
@@ -511,8 +594,20 @@ fn build_status(state: &SharedState) -> Result<VaultStatusDto, String> {
             unlocked: true,
             path: Some(sess.location.display_string()),
             database_name: Some(sess.vault.meta.database_name.clone()),
+            database_description: Some(sess.vault.meta.database_description.clone()),
             cipher: Some(sess.vault.cipher),
+            inner_cipher: Some("ChaCha20 (256-bit)".to_string()),
+            kdbx_version: Some(format!("KDBX 4.{}", sess.vault.version_minor)),
             kdf: Some(sess.vault.kdf.clone()),
+            has_master_password: sess
+                .credentials
+                .password
+                .as_ref()
+                .is_some_and(|p| !p.is_empty()),
+            has_keyfile: sess.credentials.keyfile_bytes.is_some(),
+            keyfile_path: sess.keyfile_path.clone(),
+            compression: sess.vault.compression,
+            pq_armor_available: true,
             entry_count: sess.vault.all_entries().len(),
             dirty: sess.dirty,
             auto_lock_seconds: cfg.auto_lock_seconds,
@@ -523,8 +618,16 @@ fn build_status(state: &SharedState) -> Result<VaultStatusDto, String> {
             unlocked: false,
             path: None,
             database_name: None,
+            database_description: None,
             cipher: None,
+            inner_cipher: None,
+            kdbx_version: None,
             kdf: None,
+            has_master_password: false,
+            has_keyfile: false,
+            keyfile_path: None,
+            compression: true,
+            pq_armor_available: true,
             entry_count: 0,
             dirty: false,
             auto_lock_seconds: cfg.auto_lock_seconds,
@@ -1348,14 +1451,31 @@ async fn update_security_settings(
         }
     }
 
-    if req.cipher.is_some() || req.kdf.is_some() {
-        let (vault_clone, creds_clone, loc_clone) = {
+    let needs_persist = req.cipher.is_some()
+        || req.kdf.is_some()
+        || req.database_name.is_some()
+        || req.database_description.is_some();
+
+    if needs_persist {
+        let (vault_clone, creds_clone, loc_clone, updated_name) = {
             let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
             let sess = sess_guard
                 .as_mut()
-                .ok_or_else(|| "Vault must be unlocked to change cipher or KDF".to_string())?;
+                .ok_or_else(|| "Vault must be unlocked to change vault settings".to_string())?;
             sess.touch();
 
+            if let Some(name) = req.database_name {
+                let clean = name.trim();
+                if !clean.is_empty() {
+                    if sess.vault.root_group.name == sess.vault.meta.database_name {
+                        sess.vault.root_group.name = clean.to_string();
+                    }
+                    sess.vault.meta.database_name = clean.to_string();
+                }
+            }
+            if let Some(desc) = req.database_description {
+                sess.vault.meta.database_description = desc.trim().to_string();
+            }
             if let Some(kdf) = req.kdf {
                 kdf.validate_safe_floor().map_err(|e| e.to_string())?;
                 sess.vault.kdf = kdf;
@@ -1367,7 +1487,12 @@ async fn update_security_settings(
                 password: sess.credentials.password.clone(),
                 keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
             };
-            (sess.vault.clone(), creds_copy, sess.location.clone())
+            (
+                sess.vault.clone(),
+                creds_copy,
+                sess.location.clone(),
+                sess.vault.meta.database_name.clone(),
+            )
         };
 
         let bytes = tauri::async_runtime::spawn_blocking(move || {
@@ -1378,6 +1503,7 @@ async fn update_security_settings(
         .map_err(|e| format!("Background re-encryption failed: {e}"))??;
 
         write_bytes_to_location(&app, &loc_clone, bytes.as_slice())?;
+        record_recent_vault(&app, &updated_name, &loc_clone.display_string());
 
         if let Ok(mut sess_guard) = state.session.lock() {
             if let Some(ref mut sess) = *sess_guard {
@@ -1387,6 +1513,103 @@ async fn update_security_settings(
     }
 
     build_status(&state)
+}
+
+#[tauri::command]
+async fn change_master_credentials(
+    req: ChangeMasterCredentialsRequest,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<ChangeCredentialsResultDto, String> {
+    let (vault_clone, loc_clone, current_kf_bytes, current_kf_path) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault must be unlocked to change Master Password".to_string())?;
+        sess.touch();
+
+        // Constant-time verification of current master password when one is set
+        if let Some(ref existing_pw) = sess.credentials.password {
+            if !existing_pw.is_empty() {
+                let supplied = req.current_password.as_deref().unwrap_or("");
+                let eq = existing_pw.as_bytes().len() == supplied.len()
+                    && bool::from(existing_pw.as_bytes().ct_eq(supplied.as_bytes()));
+                if !eq {
+                    return Err("Current Master Password is incorrect.".to_string());
+                }
+            }
+        }
+
+        (
+            sess.vault.clone(),
+            sess.location.clone(),
+            sess.credentials.keyfile_bytes.clone(),
+            sess.keyfile_path.clone(),
+        )
+    };
+
+    let (next_kf_bytes, next_kf_path) = match req.keyfile_action.as_str() {
+        "remove" => (None, None),
+        "set" => {
+            let path = req
+                .new_keyfile_path
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "Select a Keyfile path to attach.".to_string())?;
+            let kf_loc = resolve_location(&app, &path, ".keyx")?;
+            let kf_bytes = read_bytes_from_location(&app, &kf_loc)?;
+            (Some(kf_bytes), Some(path))
+        }
+        _ => (current_kf_bytes, current_kf_path),
+    };
+
+    let next_pw = req.new_password.filter(|s| !s.is_empty());
+
+    let new_creds = MasterCredentials::from_password_and_keyfile(next_pw, next_kf_bytes)
+        .map_err(|e| e.to_string())?;
+
+    let creds_for_task = MasterCredentials {
+        password: new_creds.password.clone(),
+        keyfile_bytes: new_creds.keyfile_bytes.clone(),
+    };
+
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let raw = save_kdbx_bytes(&vault_clone, &creds_for_task).map_err(|e| e.to_string())?;
+        Ok::<_, String>(Zeroizing::new(raw))
+    })
+    .await
+    .map_err(|e| format!("Background re-encryption failed: {e}"))??;
+
+    write_bytes_to_location(&app, &loc_clone, bytes.as_slice())?;
+
+    let canonical = loc_clone.display_string();
+    let mut biometric_reset = false;
+    if let Ok(slot_path) = biometric_slot_path(&app, &canonical) {
+        if slot_path.exists() {
+            if let Ok(meta) = fs::metadata(&slot_path) {
+                let zeros = vec![0u8; meta.len() as usize];
+                let _ = fs::write(&slot_path, zeros);
+            }
+            let _ = fs::remove_file(&slot_path);
+            biometric_reset = true;
+        }
+    }
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        if let Some(ref mut sess) = *sess_guard {
+            sess.credentials = new_creds;
+            sess.keyfile_path = next_kf_path;
+            sess.dirty = false;
+        }
+    }
+
+    let status = build_status(&state)?;
+    Ok(ChangeCredentialsResultDto {
+        status,
+        biometric_reset,
+    })
 }
 
 #[tauri::command]
@@ -1402,20 +1625,34 @@ fn run_security_audit_cmd(
 }
 
 #[tauri::command]
-fn export_vault_backup(
+async fn export_vault_backup(
     dest_path: String,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<String, String> {
-    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
-    let sess = sess_guard
-        .as_mut()
-        .ok_or_else(|| "Vault is locked".to_string())?;
-    sess.touch();
+    let (vault_clone, creds_clone) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+        (
+            sess.vault.clone(),
+            MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            },
+        )
+    };
 
     let loc = resolve_location(&app, &dest_path, ".kdbx")?;
-    let bytes =
-        Zeroizing::new(save_kdbx_bytes(&sess.vault, &sess.credentials).map_err(|e| e.to_string())?);
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let raw = save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?;
+        Ok::<_, String>(Zeroizing::new(raw))
+    })
+    .await
+    .map_err(|e| format!("Backup export task failed: {e}"))??;
+
     write_bytes_to_location(&app, &loc, bytes.as_slice())?;
     Ok(loc.display_string())
 }
@@ -1426,23 +1663,61 @@ fn generate_pq_keypair_cmd() -> Result<MlKem1024Keypair, String> {
 }
 
 #[tauri::command]
-fn export_pq_armored_vault(
+async fn run_pq_self_test() -> Result<PqSelfTestResultDto, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let started = Instant::now();
+        let kp = generate_mlkem1024_keypair().map_err(|e| e.to_string())?;
+        let sample = b"CipherPass NIST FIPS 203 ML-KEM-1024 live device verification payload";
+        let sealed = pq_seal_bytes(sample, &kp.public_key_b64).map_err(|e| e.to_string())?;
+        let unsealed = pq_unseal_bytes(&sealed, &kp.secret_key_b64).map_err(|e| e.to_string())?;
+        let passed = unsealed.as_slice() == sample;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        Ok::<_, String>(PqSelfTestResultDto {
+            passed,
+            algorithm: "NIST FIPS 203 ML-KEM-1024 (Category 5) + SHA3-512 + ChaCha20-Poly1305"
+                .to_string(),
+            public_key_bytes: 1568,
+            secret_key_bytes: 3168,
+            ciphertext_bytes: 1568,
+            elapsed_ms,
+            fingerprint: kp.fingerprint,
+        })
+    })
+    .await
+    .map_err(|e| format!("PQ self-test failed: {e}"))?
+}
+
+#[tauri::command]
+async fn export_pq_armored_vault(
     dest_path: String,
     public_key_b64: String,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<String, String> {
-    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
-    let sess = sess_guard
-        .as_mut()
-        .ok_or_else(|| "Vault is locked".to_string())?;
-    sess.touch();
+    let (vault_clone, creds_clone) = {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        let sess = sess_guard
+            .as_mut()
+            .ok_or_else(|| "Vault is locked".to_string())?;
+        sess.touch();
+        (
+            sess.vault.clone(),
+            MasterCredentials {
+                password: sess.credentials.password.clone(),
+                keyfile_bytes: sess.credentials.keyfile_bytes.clone(),
+            },
+        )
+    };
 
-    let kdbx_bytes =
-        Zeroizing::new(save_kdbx_bytes(&sess.vault, &sess.credentials).map_err(|e| e.to_string())?);
-    let sealed =
-        pq_seal_bytes(kdbx_bytes.as_slice(), &public_key_b64).map_err(|e| e.to_string())?;
     let loc = resolve_location(&app, &dest_path, ".kdbx.pq")?;
+    let sealed = tauri::async_runtime::spawn_blocking(move || {
+        let kdbx_bytes =
+            Zeroizing::new(save_kdbx_bytes(&vault_clone, &creds_clone).map_err(|e| e.to_string())?);
+        pq_seal_bytes(kdbx_bytes.as_slice(), &public_key_b64).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("PQ seal task failed: {e}"))??;
+
     write_bytes_to_location(&app, &loc, &sealed)?;
     Ok(loc.display_string())
 }
@@ -1733,9 +2008,11 @@ pub fn run() {
             copy_secret_with_auto_clear,
             clear_clipboard_now,
             update_security_settings,
+            change_master_credentials,
             run_security_audit_cmd,
             export_vault_backup,
             generate_pq_keypair_cmd,
+            run_pq_self_test,
             export_pq_armored_vault,
             unseal_pq_armored_vault,
             has_biometric_slot,

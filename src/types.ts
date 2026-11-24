@@ -1,5 +1,6 @@
 export type CipherAlgorithm = "ChaCha20" | "Aes256Cbc";
 export type KdfAlgorithm = "Argon2id" | "Argon2d";
+export type EntryType = "login" | "card" | "totp" | "dev" | "note";
 
 export interface KdfConfig {
   algorithm: KdfAlgorithm;
@@ -13,12 +14,35 @@ export interface VaultStatus {
   unlocked: boolean;
   path: string | null;
   database_name: string | null;
+  database_description: string | null;
   cipher: CipherAlgorithm | null;
+  inner_cipher: string | null;
+  kdbx_version: string | null;
   kdf: KdfConfig | null;
+  has_master_password: boolean;
+  has_keyfile: boolean;
+  keyfile_path: string | null;
+  compression: boolean;
+  pq_armor_available: boolean;
   entry_count: number;
   dirty: boolean;
   auto_lock_seconds: number;
   clipboard_clear_seconds: number;
+}
+
+export interface ChangeCredentialsResult {
+  status: VaultStatus;
+  biometric_reset: boolean;
+}
+
+export interface PqSelfTestResult {
+  passed: boolean;
+  algorithm: string;
+  public_key_bytes: number;
+  secret_key_bytes: number;
+  ciphertext_bytes: number;
+  elapsed_ms: number;
+  fingerprint: string;
 }
 
 export interface GroupNode {
@@ -67,6 +91,7 @@ export interface FolderListing {
 export interface EntrySummary {
   id: string;
   group_id: string;
+  entry_type: EntryType;
   title: string;
   username: string;
   url: string;

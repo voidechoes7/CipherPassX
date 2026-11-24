@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Copy,
+  CreditCard,
   Eraser,
+  FileText,
   Folder,
   FolderPlus,
   KeyRound,
@@ -13,6 +15,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Star,
+  Terminal,
   User,
   Wand2,
   WifiOff,
@@ -22,16 +25,54 @@ import { AuditView } from "./components/AuditView";
 import { EntryEditor } from "./components/EntryEditor";
 import { GeneratorPanel } from "./components/GeneratorPanel";
 import { SettingsView } from "./components/SettingsView";
-import { ThemePicker } from "./components/ThemePicker";
+import { ThemePicker, UiStylePicker } from "./components/ThemePicker";
 import { TotpBadge } from "./components/TotpBadge";
 import { UnlockScreen } from "./components/UnlockScreen";
-import { applyTheme, loadSavedTheme, type ThemeId } from "./themes";
-import type { EntryDetail, EntrySummary, GroupNode, VaultStatus } from "./types";
+import {
+  applyTheme,
+  applyUiStyle,
+  loadSavedTheme,
+  loadSavedUiStyle,
+  type ThemeId,
+  type UiStyleId,
+} from "./themes";
+import type { EntryDetail, EntrySummary, EntryType, GroupNode, VaultStatus } from "./types";
 
 type ActiveTab = "vault" | "totp" | "generator" | "audit" | "settings";
 
+function renderEntryTypeIcon(entryType: EntryType) {
+  switch (entryType) {
+    case "card":
+      return <CreditCard className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
+    case "totp":
+      return <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+    case "dev":
+      return <Terminal className="w-3.5 h-3.5 text-violet-400 shrink-0" />;
+    case "note":
+      return <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+    default:
+      return <KeyRound className="w-3.5 h-3.5 cyber-accent-text shrink-0" />;
+  }
+}
+
+function entryTypeLabel(entryType: EntryType): string {
+  switch (entryType) {
+    case "card":
+      return "CARD";
+    case "totp":
+      return "2FA";
+    case "dev":
+      return "SSH/API";
+    case "note":
+      return "NOTE";
+    default:
+      return "LOGIN";
+  }
+}
+
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<ThemeId>(() => loadSavedTheme());
+  const [uiStyle, setUiStyle] = useState<UiStyleId>(() => loadSavedUiStyle());
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [groups, setGroups] = useState<GroupNode | null>(null);
   const [entries, setEntries] = useState<EntrySummary[]>([]);
@@ -42,6 +83,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    applyUiStyle(uiStyle);
+  }, [uiStyle]);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("vault");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -85,8 +130,16 @@ export const App: React.FC = () => {
           unlocked: false,
           path: null,
           database_name: null,
+          database_description: null,
           cipher: null,
+          inner_cipher: null,
+          kdbx_version: null,
           kdf: null,
+          has_master_password: false,
+          has_keyfile: false,
+          keyfile_path: null,
+          compression: true,
+          pq_armor_available: true,
           entry_count: 0,
           dirty: false,
           auto_lock_seconds: 300,
@@ -178,7 +231,9 @@ export const App: React.FC = () => {
     return (
       <UnlockScreen
         theme={theme}
+        uiStyle={uiStyle}
         onThemeChange={setTheme}
+        onUiStyleChange={setUiStyle}
         onUnlocked={(s) => {
           setStatus(s);
           setActiveTab("vault");
@@ -211,7 +266,7 @@ export const App: React.FC = () => {
         }`}
       >
         <span className="flex items-center gap-2 truncate">
-          <Folder className="w-3.5 h-3.5 shrink-0 text-cyan-400/80" />
+          <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-80" />
           <span className="truncate">{depth === 0 ? "All Entries" : node.name}</span>
         </span>
         {node.entry_count > 0 && (
@@ -223,79 +278,91 @@ export const App: React.FC = () => {
   );
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#07090F] text-slate-100 overflow-hidden">
+    <div className="h-full w-full flex flex-col app-shell overflow-hidden">
       {/* Top Bar — single safe-top inset */}
-      <header className="safe-top px-3 sm:px-4 border-b border-slate-800/90 bg-[#0D111A] shrink-0">
+      <header className="safe-top px-3 sm:px-4 border-b app-header shrink-0">
         <div className="h-14 flex items-center justify-between gap-2 sm:gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-9 h-9 rounded-lg overflow-hidden border border-cyan-400/35 shrink-0 bg-[#07090F]">
-            <img src="/logo.png" alt="CipherPass" className="w-full h-full object-cover" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm font-bold text-white truncate">
-              {status.database_name ?? "CipherPass"}
-            </div>
-            <div className="text-[10px] font-mono text-slate-400 flex items-center gap-2">
-              <span className="text-cyan-300">{status.cipher}</span>
-              {status.kdf && (
-                <span className="hidden sm:inline">
-                  · {status.kdf.algorithm} ({status.kdf.memory_mib} MiB / {status.kdf.iterations}r)
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <span className="hidden md:flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-            <WifiOff className="w-3 h-3" />
-            OFFLINE
-          </span>
-          <ThemePicker theme={theme} onChange={setTheme} compact />
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                await vaultApi.clearClipboardNow();
-                showToast("Clipboard wiped immediately.");
-              } catch {
-                showToast("Clipboard cleared.");
-              }
-            }}
-            className="p-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-cyan-300 transition"
-            title="Panic Wipe Clipboard Now"
-          >
-            <Eraser className="w-3.5 h-3.5" />
-          </button>
           <button
             type="button"
             onClick={() => {
-              setActiveTab("vault");
+              setActiveTab("settings");
               setSelectedEntry(null);
-              setCreatingNew(true);
+              setCreatingNew(false);
             }}
-            className="px-2.5 sm:px-3 py-1.5 rounded-lg cyber-btn-primary font-bold text-xs flex items-center gap-1.5 transition"
+            className="flex items-center gap-2.5 min-w-0 text-left hover:opacity-90 transition"
+            title="View & edit vault properties"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">New Entry</span>
+            <div className="w-9 h-9 rounded-lg overflow-hidden border cyber-accent-border shrink-0 bg-[#07090F]">
+              <img src="/logo.png" alt="CipherPass" className="w-full h-full object-cover" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-white truncate">
+                {status.database_name ?? "CipherPass"}
+              </div>
+              <div className="text-[10px] font-mono text-slate-400 flex items-center gap-1.5 truncate">
+                <span className="cyber-accent-text">{status.cipher}</span>
+                <span className="hidden xs:inline text-violet-300">· PQ</span>
+                {status.kdf && (
+                  <span className="hidden sm:inline">
+                    · {status.kdf.algorithm} ({status.kdf.memory_mib} MiB / {status.kdf.iterations}r)
+                  </span>
+                )}
+              </div>
+            </div>
           </button>
-          <button
-            type="button"
-            onClick={handleLock}
-            className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1.5 transition"
-            title="Lock vault & zeroize RAM"
-          >
-            <Lock className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Lock</span>
-          </button>
-        </div>
+
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <span className="hidden lg:flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+              <WifiOff className="w-3 h-3" />
+              OFFLINE
+            </span>
+            <UiStylePicker uiStyle={uiStyle} onChange={setUiStyle} compact />
+            <ThemePicker theme={theme} onChange={setTheme} compact />
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await vaultApi.clearClipboardNow();
+                  showToast("Clipboard wiped immediately.");
+                } catch {
+                  showToast("Clipboard cleared.");
+                }
+              }}
+              className="p-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-cyan-300 transition"
+              title="Panic Wipe Clipboard Now"
+            >
+              <Eraser className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("vault");
+                setSelectedEntry(null);
+                setCreatingNew(true);
+                setFocusTotpOnCreate(false);
+              }}
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg cyber-btn-primary font-bold text-xs flex items-center gap-1.5 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">New Entry</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleLock}
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1.5 transition"
+              title="Lock vault & zeroize RAM"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Lock</span>
+            </button>
+          </div>
         </div>
       </header>
 
       {/* Main Workspace */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Desktop Sidebar */}
-        <aside className="hidden md:flex w-60 flex-col border-r border-slate-800/80 bg-[#0B0F17] p-3 space-y-4 overflow-y-auto shrink-0">
+        <aside className="hidden md:flex w-60 flex-col border-r app-sidebar p-3 space-y-4 overflow-y-auto shrink-0">
           <nav className="space-y-1">
             <button
               type="button"
@@ -375,7 +442,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Settings className="w-4 h-4" />
-              Crypto Settings
+              Vault, Crypto &amp; GUI
             </button>
           </nav>
 
@@ -406,7 +473,7 @@ export const App: React.FC = () => {
                 />
                 <button
                   type="submit"
-                  className="px-2 py-1 rounded bg-cyan-500 text-slate-950 text-xs font-semibold"
+                  className="px-2 py-1 rounded cyber-btn-primary text-xs font-semibold"
                 >
                   Add
                 </button>
@@ -419,27 +486,30 @@ export const App: React.FC = () => {
 
         {/* Center / Main Area */}
         {activeTab === "generator" ? (
-          <main className="flex-1 overflow-y-auto p-4 sm:p-8">
+          <main className="flex-1 overflow-y-auto p-4 sm:p-8 deck-animate">
             <div className="max-w-xl mx-auto cyber-panel rounded-2xl p-6 space-y-4">
               <h2 className="text-lg font-bold text-white">CSPRNG &amp; Diceware Generator</h2>
               <GeneratorPanel onCopy={handleCopy} />
             </div>
           </main>
         ) : activeTab === "audit" ? (
-          <main className="flex-1 overflow-y-auto">
+          <main className="flex-1 overflow-y-auto deck-animate">
             <AuditView onSelectEntry={handleSelectEntry} />
           </main>
         ) : activeTab === "settings" ? (
-          <main className="flex-1 overflow-y-auto">
+          <main className="flex-1 overflow-y-auto deck-animate">
             <SettingsView
               status={status}
               theme={theme}
+              uiStyle={uiStyle}
               onThemeChange={setTheme}
+              onUiStyleChange={setUiStyle}
               onStatusUpdated={setStatus}
+              onCopy={handleCopy}
             />
           </main>
         ) : activeTab === "totp" && !showingEditorMobile ? (
-          <main className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6 deck-animate">
             <div className="max-w-4xl mx-auto space-y-5">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
@@ -513,7 +583,7 @@ export const App: React.FC = () => {
             <section
               className={`${
                 showingEditorMobile ? "hidden lg:flex" : "flex"
-              } w-full lg:w-80 xl:w-96 flex-col border-r border-slate-800/80 bg-[#0A0E16] shrink-0`}
+              } w-full lg:w-80 xl:w-96 flex-col border-r app-list-pane shrink-0`}
             >
               <div className="p-3 border-b border-slate-800/80 space-y-2.5">
                 <div className="relative">
@@ -636,23 +706,31 @@ export const App: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleSelectEntry(item.id)}
-                          className="flex-1 min-w-0 text-left"
+                          className="flex-1 min-w-0 text-left flex items-center gap-2.5"
                         >
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-sm font-medium text-white truncate">
-                              {item.title || "(Untitled)"}
-                            </span>
-                            {item.has_totp && (
-                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
-                                2FA
-                              </span>
-                            )}
-                            {item.favorite && (
-                              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
-                            )}
+                          <div className="w-8 h-8 rounded-lg bg-[#07090F] border border-slate-800 flex items-center justify-center shrink-0">
+                            {renderEntryTypeIcon(item.entry_type)}
                           </div>
-                          <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
-                            {item.username || item.url || "—"}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm font-medium text-white truncate">
+                                {item.title || "(Untitled)"}
+                              </span>
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800/90 text-slate-300 border border-slate-700 shrink-0">
+                                {entryTypeLabel(item.entry_type)}
+                              </span>
+                              {item.has_totp && item.entry_type !== "totp" && (
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
+                                  2FA
+                                </span>
+                              )}
+                              {item.favorite && (
+                                <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
+                              {item.username || item.url || "Encrypted record"}
+                            </div>
                           </div>
                         </button>
 
@@ -668,21 +746,23 @@ export const App: React.FC = () => {
                               <User className="w-3.5 h-3.5" />
                             </button>
                           )}
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const secs = await vaultApi.copyEntryPassword(item.id);
-                                showToast(`Password copied — clears in ${secs}s`);
-                              } catch (err) {
-                                showToast(String(err));
-                              }
-                            }}
-                            className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
-                            title="Quick copy password (auto-clear)"
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                          </button>
+                          {(item.entry_type === "login" || item.entry_type === "dev") && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const secs = await vaultApi.copyEntryPassword(item.id);
+                                  showToast(`Secret copied — clears in ${secs}s`);
+                                } catch (err) {
+                                  showToast(String(err));
+                                }
+                              }}
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
+                              title="Quick copy password / token (auto-clear)"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -695,7 +775,7 @@ export const App: React.FC = () => {
             <main
               className={`${
                 showingEditorMobile ? "flex" : "hidden lg:flex"
-              } flex-1 flex-col min-w-0 bg-[#07090F] overflow-hidden`}
+              } flex-1 flex-col min-w-0 overflow-hidden`}
             >
               {(selectedEntry || creatingNew) && groups ? (
                 <EntryEditor
@@ -726,12 +806,12 @@ export const App: React.FC = () => {
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500 space-y-3">
-                  <Shield className="w-12 h-12 text-slate-800" />
+                  <Shield className="w-12 h-12 opacity-30" />
                   <div className="text-sm font-medium text-slate-400">
                     Select an entry or create a new credential
                   </div>
-                  <div className="text-xs font-mono text-slate-600">
-                    ChaCha20 Inner Stream · HMAC-SHA256 Authenticated · Zeroize on Lock
+                  <div className="text-xs font-mono text-slate-500">
+                    KDBX 4 ({status.cipher}) · NIST FIPS 203 ML-KEM-1024 Ready · Zeroize on Lock
                   </div>
                 </div>
               )}
@@ -740,15 +820,15 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Mobile Bottom Navigation — single safe-bottom inset */}
-      <nav className="md:hidden safe-bottom border-t border-slate-800 bg-[#0D111A] shrink-0">
+      {/* Mobile Bottom Navigation — adapts to Tactical, Material 3 pill, Liquid Glass floating dock, or Sliding Deck */}
+      <nav className="md:hidden safe-bottom border-t app-bottom-nav shrink-0">
         <div className="h-14 grid grid-cols-5">
           {[
             { id: "vault" as const, icon: KeyRound, label: "Vault" },
             { id: "totp" as const, icon: ShieldCheck, label: "2FA" },
             { id: "generator" as const, icon: Wand2, label: "Gen" },
             { id: "audit" as const, icon: ShieldAlert, label: "Audit" },
-            { id: "settings" as const, icon: Settings, label: "Crypto" },
+            { id: "settings" as const, icon: Settings, label: "Settings" },
           ].map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -762,11 +842,13 @@ export const App: React.FC = () => {
                   setCreatingNew(false);
                   setFocusTotpOnCreate(false);
                 }}
-                className={`flex flex-col items-center justify-center gap-0.5 text-[10px] ${
+                className={`flex flex-col items-center justify-center gap-0.5 text-[10px] transition ${
                   isActive ? "cyber-accent-text font-semibold" : "text-slate-400"
                 }`}
               >
-                <Icon className="w-4 h-4" />
+                <span className={isActive ? "nav-pill-active" : ""}>
+                  <Icon className="w-4 h-4" />
+                </span>
                 <span>{item.label}</span>
               </button>
             );

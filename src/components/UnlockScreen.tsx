@@ -24,7 +24,7 @@ import {
   pickSaveKeyfile,
   vaultApi,
 } from "../api/vaultApi";
-import type { ThemeId } from "../themes";
+import type { ThemeId, UiStyleId } from "../themes";
 import type {
   CipherAlgorithm,
   EntropyReport,
@@ -34,15 +34,23 @@ import type {
 } from "../types";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { GeneratorPanel } from "./GeneratorPanel";
-import { ThemePicker } from "./ThemePicker";
+import { ThemePicker, UiStylePicker } from "./ThemePicker";
 
 interface Props {
   theme: ThemeId;
+  uiStyle: UiStyleId;
   onThemeChange: (t: ThemeId) => void;
+  onUiStyleChange: (s: UiStyleId) => void;
   onUnlocked: (status: VaultStatus) => void;
 }
 
-export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked }) => {
+export const UnlockScreen: React.FC<Props> = ({
+  theme,
+  uiStyle,
+  onThemeChange,
+  onUiStyleChange,
+  onUnlocked,
+}) => {
   const [mode, setMode] = useState<"open" | "create">("open");
   const [defaultDir, setDefaultDir] = useState("");
   const [localVaults, setLocalVaults] = useState<LocalVaultInfo[]>([]);
@@ -297,10 +305,11 @@ export const UnlockScreen: React.FC<Props> = ({ theme, onThemeChange, onUnlocked
             <WifiOff className="w-3 h-3 shrink-0" />
             100% OFFLINE
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-400/30 whitespace-nowrap">
               KDBX 4 · FIPS 203 PQ
             </span>
+            <UiStylePicker uiStyle={uiStyle} onChange={onUiStyleChange} compact />
             <ThemePicker theme={theme} onChange={onThemeChange} compact />
           </div>
         </div>

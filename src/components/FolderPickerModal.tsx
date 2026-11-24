@@ -27,6 +27,8 @@ import type { FolderListing, StorageRoot } from "../types";
 interface Props {
   open: boolean;
   defaultFileName: string;
+  title?: string;
+  requiredExtension?: string;
   onSelectFullPath: (fullPath: string) => void;
   onClose: () => void;
 }
@@ -34,6 +36,8 @@ interface Props {
 export const FolderPickerModal: React.FC<Props> = ({
   open,
   defaultFileName,
+  title = "Choose Folder for Vault",
+  requiredExtension = ".kdbx",
   onSelectFullPath,
   onClose,
 }) => {
@@ -105,9 +109,9 @@ export const FolderPickerModal: React.FC<Props> = ({
   if (!open) return null;
 
   const cleanFileName =
-    defaultFileName.trim().endsWith(".kdbx")
+    defaultFileName.trim().toLowerCase().endsWith(requiredExtension.toLowerCase())
       ? defaultFileName.trim()
-      : `${defaultFileName.trim() || "CipherPass_Vault"}.kdbx`;
+      : `${defaultFileName.trim() || "CipherPass_Vault"}${requiredExtension}`;
 
   const joinPath = (dir: string, child: string) => {
     const sep = dir.includes("\\") ? "\\" : "/";
@@ -190,7 +194,7 @@ export const FolderPickerModal: React.FC<Props> = ({
           <div className="flex items-center gap-2 min-w-0">
             <FolderOpen className="w-4 h-4 cyber-accent-text shrink-0" />
             <h3 className="text-sm font-bold text-white truncate">
-              Choose Folder for Vault
+              {title}
             </h3>
           </div>
           <button

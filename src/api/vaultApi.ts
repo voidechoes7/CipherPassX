@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { checkStatus as checkBiometricStatus } from "@tauri-apps/plugin-biometric";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type {
+  ChangeCredentialsResult,
   CipherAlgorithm,
   EntryDetail,
   EntrySummary,
@@ -17,6 +18,7 @@ import type {
   MlKem1024Keypair,
   PassphraseGenOptions,
   PasswordGenOptions,
+  PqSelfTestResult,
   SecurityAuditReport,
   StorageRoot,
   TotpCode,
@@ -320,11 +322,20 @@ export const vaultApi = {
     }),
 
   updateSecuritySettings: (req: {
+    database_name?: string | null;
+    database_description?: string | null;
     cipher?: CipherAlgorithm | null;
     kdf?: KdfConfig | null;
     auto_lock_seconds?: number | null;
     clipboard_clear_seconds?: number | null;
   }) => invoke<VaultStatus>("update_security_settings", { req }),
+
+  changeMasterCredentials: (req: {
+    current_password?: string | null;
+    new_password?: string | null;
+    keyfile_action: "keep" | "set" | "remove";
+    new_keyfile_path?: string | null;
+  }) => invoke<ChangeCredentialsResult>("change_master_credentials", { req }),
 
   runSecurityAudit: () => invoke<SecurityAuditReport>("run_security_audit_cmd"),
 
@@ -332,6 +343,8 @@ export const vaultApi = {
     invoke<string>("export_vault_backup", { destPath }),
 
   generatePqKeypair: () => invoke<MlKem1024Keypair>("generate_pq_keypair_cmd"),
+
+  runPqSelfTest: () => invoke<PqSelfTestResult>("run_pq_self_test"),
 
   exportPqArmoredVault: (destPath: string, publicKeyB64: string) =>
     invoke<string>("export_pq_armored_vault", {
