@@ -21,7 +21,22 @@ import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
   private var appWebView: WebView? = null
+  @Volatile
   private var pendingFileName: String = "CipherPass_Vault.kdbx"
+
+  private fun isTrustedWebViewOrigin(url: String?): Boolean {
+    if (url.isNullOrBlank()) return false
+    val uri = try {
+      Uri.parse(url)
+    } catch (_: Exception) {
+      return false
+    }
+    val scheme = uri.scheme?.lowercase() ?: return false
+    val host = uri.host?.lowercase() ?: ""
+    return (scheme == "https" && host == "tauri.localhost") ||
+      (scheme == "http" && host == "tauri.localhost") ||
+      (scheme == "tauri" && host == "localhost")
+  }
 
   private val openDocumentTreeLauncher = registerForActivityResult(
     ActivityResultContracts.OpenDocumentTree()
@@ -115,8 +130,19 @@ class MainActivity : TauriActivity() {
   }
 
   private fun sanitizeFileName(raw: String): String {
-    val trimmed = raw.trim().replace("/", "_").replace("\\", "_")
-    return if (trimmed.isEmpty()) "CipherPass_Vault.kdbx" else trimmed
+    val cleaned = raw
+      .trim()
+      .filter { !it.isISOControl() && it != '\u0000' }
+      .replace("/", "_")
+      .replace("\\", "_")
+      .replace("..", "_")
+      .trimStart('.')
+      .take(128)
+    return if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") {
+      "CipherPass_Vault.kdbx"
+    } else {
+      cleaned
+    }
   }
 
   private fun tryResolvePrimaryStoragePath(treeUri: Uri): String? {
@@ -129,16 +155,35 @@ class MainActivity : TauriActivity() {
     val parts = docId.split(":", limit = 2)
     if (parts.size != 2 || !parts[0].equals("primary", ignoreCase = true)) return null
     val rel = parts[1].trim('/')
-    val base = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
-    return if (rel.isEmpty()) base else "$base/$rel"
+    if (rel.contains('\u0000') || rel.contains('\\')) return null
+    val segments = rel.split('/').filter { it.isNotEmpty() }
+    if (segments.any { it == "." || it == ".." }) return null
+    val baseDir = Environment.getExternalStorageDirectory()
+    val base = baseDir.absolutePath.trimEnd('/')
+    val candidate = if (segments.isEmpty()) base else "$base/${segments.joinToString("/")}"
+    return try {
+      val canonicalBase = baseDir.canonicalPath.trimEnd('/')
+      val canonicalTarget = java.io.File(candidate).canonicalPath
+      if (canonicalTarget == canonicalBase || canonicalTarget.startsWith("$canonicalBase/")) {
+        canonicalTarget
+      } else {
+        null
+      }
+    } catch (_: Exception) {
+      null
+    }
   }
 
   private fun dispatchFolderPicked(path: String?, error: String?) {
     val payload = JSONObject()
     if (path != null) payload.put("path", path) else payload.put("path", JSONObject.NULL)
     if (error != null) payload.put("error", error) else payload.put("error", JSONObject.NULL)
+    val safeJson = payload
+      .toString()
+      .replace("\u2028", "\\u2028")
+      .replace("\u2029", "\\u2029")
     val js =
-      "window.dispatchEvent(new CustomEvent('cipherpass-native-folder-picked', { detail: $payload }));"
+      "window.dispatchEvent(new CustomEvent('cipherpass-native-folder-picked', { detail: $safeJson }));"
     appWebView?.post {
       appWebView?.evaluateJavascript(js, null)
     }
@@ -154,6 +199,7 @@ class MainActivity : TauriActivity() {
     fun requestAllFilesAccess(): Boolean {
       return try {
         runOnUiThread {
+          if (!isTrustedWebViewOrigin(appWebView?.url)) return@runOnUiThread
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
               val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
@@ -183,8 +229,9 @@ class MainActivity : TauriActivity() {
     @JavascriptInterface
     fun pickNativeFolder(defaultFileName: String): Boolean {
       return try {
-        pendingFileName = defaultFileName
+        pendingFileName = sanitizeFileName(defaultFileName)
         runOnUiThread {
+          if (!isTrustedWebViewOrigin(appWebView?.url)) return@runOnUiThread
           openDocumentTreeLauncher.launch(null)
         }
         true
@@ -197,6 +244,7 @@ class MainActivity : TauriActivity() {
     fun setScreenProtection(enabled: Boolean): Boolean {
       return try {
         runOnUiThread {
+          if (!isTrustedWebViewOrigin(appWebView?.url)) return@runOnUiThread
           if (enabled) {
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
           } else {
@@ -213,6 +261,7 @@ class MainActivity : TauriActivity() {
     fun setSystemBarsAppearance(isLight: Boolean, bgColorHex: String): Boolean {
       return try {
         runOnUiThread {
+          if (!isTrustedWebViewOrigin(appWebView?.url)) return@runOnUiThread
           try {
             val parsedColor = Color.parseColor(bgColorHex)
             @Suppress("DEPRECATION")

@@ -6,14 +6,14 @@ use fips203::traits::{Decaps, Encaps, KeyGen, SerDes};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{CipherPassError, Result};
 
 const PQ_MAGIC: &[u8; 8] = b"CPQX0001";
 const PQ_KDF_DOMAIN: &[u8] = b"CipherPass-FIPS203-ML-KEM-1024-ChaCha20Poly1305-v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct MlKem1024Keypair {
     /// Base64-encoded NIST FIPS 203 ML-KEM-1024 Encapsulation (Public) Key (1568 bytes raw).
     pub public_key_b64: String,
@@ -21,6 +21,55 @@ pub struct MlKem1024Keypair {
     pub secret_key_b64: String,
     /// Short SHA3-512 fingerprint of the public key for quick visual verification.
     pub fingerprint: String,
+}
+
+impl std::fmt::Debug for MlKem1024Keypair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MlKem1024Keypair")
+            .field("public_key_b64", &self.public_key_b64)
+            .field("secret_key_b64", &"[REDACTED]")
+            .field("fingerprint", &self.fingerprint)
+            .finish()
+    }
+}
+
+/// Validate that a text payload contains a well-formed Base64 NIST FIPS 203 ML-KEM-1024
+/// public key (1568 bytes) or secret key (3168 bytes). Used to prevent arbitrary file read/write.
+pub fn validate_mlkem1024_key_b64(key_b64: &str) -> Result<()> {
+    let trimmed = key_b64.trim();
+    if trimmed.is_empty() || trimmed.len() > 8192 {
+        return Err(CipherPassError::CryptoError(
+            "Invalid ML-KEM-1024 key length".into(),
+        ));
+    }
+    let decoded = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(trimmed)
+            .map_err(|_| {
+                CipherPassError::CryptoError("Invalid Base64 ML-KEM-1024 key material".into())
+            })?,
+    );
+    if decoded.len() == ml_kem_1024::EK_LEN {
+        let arr: [u8; ml_kem_1024::EK_LEN] = decoded.as_slice().try_into().unwrap();
+        ml_kem_1024::EncapsKey::try_from_bytes(arr).map_err(|e| {
+            CipherPassError::CryptoError(format!("Invalid ML-KEM-1024 public key: {e}"))
+        })?;
+        Ok(())
+    } else if decoded.len() == ml_kem_1024::DK_LEN {
+        let arr: Zeroizing<[u8; ml_kem_1024::DK_LEN]> =
+            Zeroizing::new(decoded.as_slice().try_into().unwrap());
+        ml_kem_1024::DecapsKey::try_from_bytes(*arr).map_err(|e| {
+            CipherPassError::CryptoError(format!("Invalid ML-KEM-1024 secret key: {e}"))
+        })?;
+        Ok(())
+    } else {
+        Err(CipherPassError::CryptoError(format!(
+            "Expected ML-KEM-1024 public ({} B) or secret ({} B) key, got {} bytes",
+            ml_kem_1024::EK_LEN,
+            ml_kem_1024::DK_LEN,
+            decoded.len()
+        )))
+    }
 }
 
 fn derive_aead_key(shared_secret: &[u8], kem_ct: &[u8], nonce: &[u8; 12]) -> Zeroizing<[u8; 32]> {

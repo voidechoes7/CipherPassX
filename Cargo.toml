@@ -6,19 +6,19 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 authors = ["voidechoes7"]
 repository = "https://github.com/voidechoes7/CipherPassX"
 
 [workspace.dependencies]
-aes = "0.8"
-argon2 = "0.5"
+aes = { version = "0.8", features = ["zeroize"] }
+argon2 = { version = "0.5", features = ["zeroize"] }
 base32 = "0.5"
 base64 = "0.22"
-cbc = { version = "0.1", features = ["alloc"] }
-chacha20 = "0.9"
+cbc = { version = "0.1", features = ["alloc", "zeroize"] }
+chacha20 = { version = "0.9", features = ["zeroize"] }
 chacha20poly1305 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 fips203 = "0.4"
@@ -27,7 +27,7 @@ hex = "0.4"
 hmac = "0.12"
 quick-xml = "0.37"
 rand_core = { version = "0.6", features = ["getrandom"] }
-salsa20 = "0.10"
+salsa20 = { version = "0.10", features = ["zeroize"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"

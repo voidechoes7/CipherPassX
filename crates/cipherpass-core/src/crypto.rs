@@ -190,7 +190,11 @@ impl KdfConfig {
         dict.insert("$UUID", VariantValue::Bytes(self.algorithm.uuid().to_vec()));
         dict.insert("S", VariantValue::Bytes(salt.to_vec()));
         dict.insert("P", VariantValue::UInt32(self.parallelism));
-        dict.insert("M", VariantValue::UInt64(self.memory_mib * 1024 * 1024));
+        let mem_bytes = self
+            .memory_mib
+            .saturating_mul(1024)
+            .saturating_mul(1024);
+        dict.insert("M", VariantValue::UInt64(mem_bytes));
         dict.insert("I", VariantValue::UInt64(self.iterations));
         dict.insert("V", VariantValue::UInt32(self.version));
         dict
@@ -206,6 +210,12 @@ impl KdfConfig {
             .get_bytes("S")
             .ok_or_else(|| CipherPassError::MalformedFormat("Missing KDF salt (S)".into()))?
             .to_vec();
+        if salt.len() < 8 || salt.len() > 1024 {
+            return Err(CipherPassError::MalformedFormat(format!(
+                "KDF salt length out of safe bounds: {} bytes",
+                salt.len()
+            )));
+        }
         let parallelism = dict.get_u32("P").ok_or_else(|| {
             CipherPassError::MalformedFormat("Missing KDF parallelism (P)".into())
         })?;
@@ -216,6 +226,25 @@ impl KdfConfig {
             .get_u64("I")
             .ok_or_else(|| CipherPassError::MalformedFormat("Missing KDF iterations (I)".into()))?;
         let version = dict.get_u32("V").unwrap_or(0x13);
+
+        // Enforce strict DoS upper bounds even before KDF execution on unauthenticated headers.
+        let max_mem_bytes = MAX_KDF_MEMORY_MIB * 1024 * 1024;
+        if memory_bytes < 8 * 1024 || memory_bytes > max_mem_bytes {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "KDF memory {} bytes outside safe open bounds (8 KiB ..= {MAX_KDF_MEMORY_MIB} MiB)",
+                memory_bytes
+            )));
+        }
+        if iterations == 0 || iterations > MAX_KDF_ITERATIONS {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "KDF iterations {iterations} outside safe open bounds (1 ..= {MAX_KDF_ITERATIONS})"
+            )));
+        }
+        if parallelism == 0 || parallelism > MAX_KDF_PARALLELISM {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "KDF parallelism {parallelism} outside safe open bounds (1 ..= {MAX_KDF_PARALLELISM})"
+            )));
+        }
 
         // Convert bytes to MiB (round up to at least 1 MiB if small external test vault).
         let memory_mib = (memory_bytes / (1024 * 1024)).max(1);
@@ -239,7 +268,39 @@ impl KdfConfig {
         salt: &[u8],
         exact_memory_bytes: Option<u64>,
     ) -> Result<Zeroizing<[u8; 32]>> {
-        let mem_bytes = exact_memory_bytes.unwrap_or(self.memory_mib * 1024 * 1024);
+        if salt.len() < 8 || salt.len() > 1024 {
+            return Err(CipherPassError::CryptoError(format!(
+                "Argon2 salt length out of range: {}",
+                salt.len()
+            )));
+        }
+        let max_mem_bytes = MAX_KDF_MEMORY_MIB * 1024 * 1024;
+        let mem_bytes = match exact_memory_bytes {
+            Some(b) => b,
+            None => self
+                .memory_mib
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| CipherPassError::CryptoError("Argon2 memory overflow".into()))?,
+        };
+        if mem_bytes < 8 * 1024 || mem_bytes > max_mem_bytes {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "Argon2 memory {} bytes exceeds safe bounds (8 KiB ..= {MAX_KDF_MEMORY_MIB} MiB)",
+                mem_bytes
+            )));
+        }
+        if self.iterations == 0 || self.iterations > MAX_KDF_ITERATIONS {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "Argon2 iterations {} exceeds safe bounds (1 ..= {MAX_KDF_ITERATIONS})",
+                self.iterations
+            )));
+        }
+        if self.parallelism == 0 || self.parallelism > MAX_KDF_PARALLELISM {
+            return Err(CipherPassError::UnsafeKdfParams(format!(
+                "Argon2 parallelism {} exceeds safe bounds (1 ..= {MAX_KDF_PARALLELISM})",
+                self.parallelism
+            )));
+        }
+
         let mem_kib = u32::try_from(mem_bytes / 1024)
             .map_err(|_| CipherPassError::CryptoError("Argon2 memory out of range".into()))?;
         let t_cost = u32::try_from(self.iterations)
@@ -347,22 +408,22 @@ pub fn generate_keyfile_v2_xml() -> Zeroizing<String> {
     let hash = Sha256::digest(raw_key.as_slice());
     let hash_prefix = hex::encode_upper(&hash[..4]);
 
-    let hex_key = hex::encode_upper(raw_key.as_slice());
+    let hex_key = Zeroizing::new(hex::encode_upper(raw_key.as_slice()));
     // Format as 8 groups of 8 hex chars across 2 lines (KeePass 2.0 standard formatting)
-    let line1 = format!(
+    let line1 = Zeroizing::new(format!(
         "{} {} {} {}",
         &hex_key[0..8],
         &hex_key[8..16],
         &hex_key[16..24],
         &hex_key[24..32]
-    );
-    let line2 = format!(
+    ));
+    let line2 = Zeroizing::new(format!(
         "{} {} {} {}",
         &hex_key[32..40],
         &hex_key[40..48],
         &hex_key[48..56],
         &hex_key[56..64]
-    );
+    ));
 
     Zeroizing::new(format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -372,22 +433,29 @@ pub fn generate_keyfile_v2_xml() -> Zeroizing<String> {
          \t</Meta>\n\
          \t<Key>\n\
          \t\t<Data Hash=\"{hash_prefix}\">\n\
-         \t\t\t{line1}\n\
-         \t\t\t{line2}\n\
+         \t\t\t{}\n\
+         \t\t\t{}\n\
          \t\t</Data>\n\
          \t</Key>\n\
-         </KeyFile>\n"
+         </KeyFile>\n",
+        line1.as_str(),
+        line2.as_str()
     ))
 }
+
+/// Hard cap on XML keyfile size (64 KiB) to prevent parser DoS.
+const MAX_XML_KEYFILE_BYTES: usize = 64 * 1024;
 
 /// Parse a KeePass keyfile: supports XML v2.0 (with Hash verification), XML v1.0 (base64),
 /// 32-byte raw binary, 64-byte hex, or arbitrary file (SHA-256 fallback per KeePass spec).
 pub fn parse_keyfile_bytes(raw: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     // 1. Try XML keyfile (v2.0 or v1.0)
-    if let Ok(text) = std::str::from_utf8(raw) {
-        let trimmed = text.trim();
-        if trimmed.contains("<KeyFile") && trimmed.contains("<Data") {
-            return parse_xml_keyfile(trimmed);
+    if raw.len() <= MAX_XML_KEYFILE_BYTES {
+        if let Ok(text) = std::str::from_utf8(raw) {
+            let trimmed = text.trim_start_matches('\u{feff}').trim();
+            if trimmed.contains("<KeyFile") && trimmed.contains("<Data") {
+                return parse_xml_keyfile(trimmed);
+            }
         }
     }
 
@@ -401,9 +469,10 @@ pub fn parse_keyfile_bytes(raw: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     // 3. 64-byte hex-encoded key
     if raw.len() == 64 {
         if let Ok(decoded) = hex::decode(raw) {
+            let decoded = Zeroizing::new(decoded);
             if decoded.len() == 32 {
                 let mut out = Zeroizing::new([0u8; 32]);
-                out.copy_from_slice(&decoded);
+                out.copy_from_slice(decoded.as_slice());
                 return Ok(out);
             }
         }
@@ -419,22 +488,40 @@ fn parse_xml_keyfile(xml: &str) -> Result<Zeroizing<[u8; 32]>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
+    if xml.len() > MAX_XML_KEYFILE_BYTES {
+        return Err(CipherPassError::InvalidKeyfile(
+            "XML keyfile exceeds 64 KiB safety limit".into(),
+        ));
+    }
+
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
     let mut version = String::new();
     let mut in_version = false;
     let mut in_data = false;
+    let mut data_seen = false;
     let mut data_hash_attr: Option<String> = None;
     let mut data_text = Zeroizing::new(String::new());
 
     loop {
         match reader.read_event() {
+            Ok(Event::DocType(_)) => {
+                return Err(CipherPassError::InvalidKeyfile(
+                    "XML DOCTYPE declarations are forbidden in keyfiles".into(),
+                ));
+            }
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 if name.as_ref() == b"Version" {
                     in_version = true;
                 } else if name.as_ref() == b"Data" {
+                    if data_seen {
+                        return Err(CipherPassError::InvalidKeyfile(
+                            "Duplicate <Data> element in XML keyfile".into(),
+                        ));
+                    }
+                    data_seen = true;
                     in_data = true;
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Hash" {
@@ -474,7 +561,7 @@ fn parse_xml_keyfile(xml: &str) -> Result<Zeroizing<[u8; 32]>> {
 
     let ver_trimmed = version.trim();
     if ver_trimmed.starts_with("2.") {
-        // Keyfile v2.0: hex string (whitespace stripped) + optional 4-byte SHA-256 Hash verification
+        // Keyfile v2.0: hex string (whitespace stripped) + mandatory 4-byte SHA-256 Hash verification
         let hex_clean: Zeroizing<String> =
             Zeroizing::new(data_text.chars().filter(|c| !c.is_whitespace()).collect());
         let decoded = Zeroizing::new(hex::decode(hex_clean.as_str()).map_err(|_| {
@@ -487,17 +574,19 @@ fn parse_xml_keyfile(xml: &str) -> Result<Zeroizing<[u8; 32]>> {
             )));
         }
 
-        if let Some(expected_hash) = data_hash_attr {
-            let expected_bytes = hex::decode(expected_hash.trim()).map_err(|_| {
-                CipherPassError::InvalidKeyfile("Invalid Hash attribute in Keyfile v2.0".into())
-            })?;
-            let actual_hash = Sha256::digest(decoded.as_slice());
-            if expected_bytes.len() != 4 || actual_hash[..4].ct_eq(&expected_bytes).unwrap_u8() != 1
-            {
-                return Err(CipherPassError::InvalidKeyfile(
-                    "Keyfile v2.0 integrity Hash mismatch".into(),
-                ));
-            }
+        let expected_hash = data_hash_attr.ok_or_else(|| {
+            CipherPassError::InvalidKeyfile(
+                "Missing mandatory Hash attribute in Keyfile v2.0".into(),
+            )
+        })?;
+        let expected_bytes = hex::decode(expected_hash.trim()).map_err(|_| {
+            CipherPassError::InvalidKeyfile("Invalid Hash attribute in Keyfile v2.0".into())
+        })?;
+        let actual_hash = Sha256::digest(decoded.as_slice());
+        if expected_bytes.len() != 4 || actual_hash[..4].ct_eq(&expected_bytes).unwrap_u8() != 1 {
+            return Err(CipherPassError::InvalidKeyfile(
+                "Keyfile v2.0 integrity Hash mismatch".into(),
+            ));
         }
 
         let mut out = Zeroizing::new([0u8; 32]);
@@ -690,6 +779,11 @@ impl InnerStreamCipher {
         match stream_id {
             INNER_STREAM_NONE => Ok(Self::None),
             INNER_STREAM_CHACHA20 => {
+                if key.is_empty() {
+                    return Err(CipherPassError::MalformedFormat(
+                        "Missing or empty InnerRandomStreamKey for ChaCha20".into(),
+                    ));
+                }
                 // KDBX 4 spec: SHA-512(key) -> first 32 bytes = ChaCha20 key, next 12 bytes = nonce.
                 let mut hash = Zeroizing::new([0u8; 64]);
                 hash.copy_from_slice(&Sha512::digest(key));
@@ -697,6 +791,11 @@ impl InnerStreamCipher {
                 Ok(Self::ChaCha20(cipher))
             }
             INNER_STREAM_SALSA20 => {
+                if key.is_empty() {
+                    return Err(CipherPassError::MalformedFormat(
+                        "Missing or empty InnerRandomStreamKey for Salsa20".into(),
+                    ));
+                }
                 // Legacy KDBX compatibility: SHA-256(key) + fixed 8-byte Salsa20 IV.
                 let mut hash = Zeroizing::new([0u8; 32]);
                 hash.copy_from_slice(&Sha256::digest(key));

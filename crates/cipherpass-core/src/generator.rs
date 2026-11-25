@@ -1,6 +1,6 @@
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasswordGenOptions {
@@ -53,10 +53,20 @@ pub struct EntropyReport {
     pub score: u8, // 0..=100
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct GeneratedSecret {
     pub value: String,
+    #[zeroize(skip)]
     pub entropy: EntropyReport,
+}
+
+impl std::fmt::Debug for GeneratedSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedSecret")
+            .field("value", &"[REDACTED]")
+            .field("entropy", &self.entropy)
+            .finish()
+    }
 }
 
 /// Unbiased uniform index in `0..upper` using CSPRNG (`OsRng`) with rejection sampling.
@@ -102,36 +112,37 @@ pub fn generate_password(opts: &PasswordGenOptions) -> GeneratedSecret {
         groups.push(filter("0123456789"));
     }
 
-    let pool: Vec<char> = groups.iter().flatten().copied().collect();
-    let mut chars: Vec<char> = Vec::with_capacity(length);
+    let pool: Vec<u8> = groups
+        .iter()
+        .flatten()
+        .map(|c| *c as u8)
+        .collect();
+    let mut bytes = Zeroizing::new(Vec::with_capacity(length));
 
     // Guarantee at least one character from each enabled class
     for grp in &groups {
-        if chars.len() < length && !grp.is_empty() {
-            chars.push(grp[csprng_index(grp.len())]);
+        if bytes.len() < length && !grp.is_empty() {
+            bytes.push(grp[csprng_index(grp.len())] as u8);
         }
     }
-    while chars.len() < length {
-        chars.push(pool[csprng_index(pool.len())]);
+    while bytes.len() < length {
+        bytes.push(pool[csprng_index(pool.len())]);
     }
 
     // Fisher-Yates shuffle using CSPRNG
-    for i in (1..chars.len()).rev() {
+    for i in (1..bytes.len()).rev() {
         let j = csprng_index(i + 1);
-        chars.swap(i, j);
+        bytes.swap(i, j);
     }
 
-    let value: Zeroizing<String> = Zeroizing::new(chars.into_iter().collect());
+    let value = String::from_utf8(bytes.to_vec()).expect("ASCII password pool is valid UTF-8");
     let exact_bits = (length as f64) * (pool.len() as f64).log2();
     let entropy = build_entropy_report(exact_bits);
 
-    GeneratedSecret {
-        value: value.to_string(),
-        entropy,
-    }
+    GeneratedSecret { value, entropy }
 }
 
-/// Generate a Diceware passphrase from the embedded 512-word CSPRNG wordlist (9 bits/word).
+/// Generate a Diceware passphrase from the embedded 520-word CSPRNG wordlist (>9 bits/word).
 pub fn generate_passphrase(opts: &PassphraseGenOptions) -> GeneratedSecret {
     let count = opts.word_count.clamp(4, 12);
     let mut words: Vec<String> = Vec::with_capacity(count);
@@ -164,6 +175,9 @@ pub fn generate_passphrase(opts: &PassphraseGenOptions) -> GeneratedSecret {
         &opts.separator
     };
     let value = words.join(sep);
+    for w in &mut words {
+        w.zeroize();
+    }
     let bits = (count as f64) * (DICEWARE_WORDS.len() as f64).log2() + extra_bits;
 
     GeneratedSecret {
@@ -208,7 +222,7 @@ pub fn evaluate_password(password: &str) -> EntropyReport {
     let mut bits = (len as f64) * (pool as f64).log2();
 
     // Penalize obvious low-entropy patterns (repetitions / common weak words)
-    let lower = password.to_ascii_lowercase();
+    let lower = Zeroizing::new(password.to_ascii_lowercase());
     let common_weak = [
         "password", "123456", "qwerty", "admin", "letmein", "welcome", "cipher", "pass123",
     ];
@@ -562,7 +576,7 @@ const DICEWARE_WORDS: &[&str] = &[
     "facade",
     "facet",
     "factor",
-    "faggot",
+    "faucet",
     "falcon",
     "fallow",
     "fanfare",

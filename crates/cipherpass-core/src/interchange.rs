@@ -7,7 +7,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::random_bytes;
 use crate::error::{CipherPassError, Result};
@@ -16,6 +16,11 @@ use crate::model::{CustomField, ProtectedString, Vault, VaultEntry, VaultGroup};
 type HmacSha256 = Hmac<Sha256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
+
+/// Hard cap on Bitwarden JSON / CSV import payload size (64 MiB) to prevent OOM DoS.
+const MAX_INTERCHANGE_INPUT_BYTES: usize = 64 * 1024 * 1024;
+/// Hard cap on nested folder depth during import/merge to prevent stack overflow DoS.
+const MAX_IMPORT_FOLDER_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportSummary {
@@ -29,17 +34,23 @@ pub struct ImportSummary {
 // Bitwarden JSON Schema (Unencrypted & Password-Protected Encrypted)
 // =========================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwEnvelope {
     #[serde(default)]
+    #[zeroize(skip)]
     encrypted: bool,
     #[serde(default)]
+    #[zeroize(skip)]
     password_protected: bool,
     salt: Option<String>,
+    #[zeroize(skip)]
     kdf_type: Option<u8>,
+    #[zeroize(skip)]
     kdf_iterations: Option<u32>,
+    #[zeroize(skip)]
     kdf_memory: Option<u32>,
+    #[zeroize(skip)]
     kdf_parallelism: Option<u32>,
     #[serde(rename = "encKeyValidation_DO_NOT_EDIT")]
     enc_key_validation: Option<String>,
@@ -50,15 +61,16 @@ struct BwEnvelope {
     items: Vec<BwItem>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwPlainExport {
+    #[zeroize(skip)]
     encrypted: bool,
     folders: Vec<BwFolder>,
     items: Vec<BwItem>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BwEncryptedExport {
     encrypted: bool,
@@ -73,14 +85,14 @@ struct BwEncryptedExport {
     data: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwFolder {
     id: String,
     name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwItem {
     #[serde(default)]
@@ -88,12 +100,14 @@ struct BwItem {
     #[serde(default)]
     folder_id: Option<String>,
     #[serde(rename = "type")]
+    #[zeroize(skip)]
     item_type: u8,
     #[serde(default)]
     name: String,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
+    #[zeroize(skip)]
     favorite: bool,
     #[serde(default)]
     fields: Vec<BwField>,
@@ -105,7 +119,7 @@ struct BwItem {
     identity: Option<BwIdentity>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwField {
     #[serde(default)]
@@ -113,10 +127,11 @@ struct BwField {
     #[serde(default)]
     value: Option<String>,
     #[serde(rename = "type", default)]
+    #[zeroize(skip)]
     field_type: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwLogin {
     #[serde(default)]
@@ -129,14 +144,14 @@ struct BwLogin {
     totp: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwUri {
     #[serde(default)]
     uri: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwCard {
     #[serde(default)]
@@ -153,7 +168,7 @@ struct BwCard {
     code: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 struct BwIdentity {
     #[serde(default)]
@@ -193,23 +208,23 @@ fn pbkdf2_hmac_sha256_32(
     salt: &[u8],
     iterations: u32,
 ) -> Result<Zeroizing<[u8; 32]>> {
-    if iterations == 0 || iterations > 5_000_000 {
+    if iterations == 0 || iterations > 2_000_000 {
         return Err(CipherPassError::CryptoError(format!(
-            "Unsupported PBKDF2 iteration count: {iterations}"
+            "Unsupported PBKDF2 iteration count: {iterations} (allowed: 1..=2000000)"
         )));
     }
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(password)
+    let base_mac = <HmacSha256 as Mac>::new_from_slice(password)
         .map_err(|_| CipherPassError::CryptoError("HMAC init failed".into()))?;
+    let mut mac = base_mac.clone();
     mac.update(salt);
     mac.update(&1u32.to_be_bytes());
-    let mut u: [u8; 32] = mac.finalize().into_bytes().into();
-    let mut out = Zeroizing::new(u);
+    let mut u = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
+    let mut out = Zeroizing::new(*u);
 
     for _ in 1..iterations {
-        let mut m = <HmacSha256 as Mac>::new_from_slice(password)
-            .map_err(|_| CipherPassError::CryptoError("HMAC init failed".into()))?;
-        m.update(&u);
-        u = m.finalize().into_bytes().into();
+        let mut m = base_mac.clone();
+        m.update(u.as_slice());
+        *u = m.finalize().into_bytes().into();
         for (dst, src) in out.iter_mut().zip(u.iter()) {
             *dst ^= *src;
         }
@@ -238,14 +253,34 @@ fn derive_bw_stretched_keys(
     memory_mib: Option<u32>,
     parallelism: Option<u32>,
 ) -> Result<StretchedKeyPair> {
+    if salt_str.is_empty() || salt_str.len() > 1024 {
+        return Err(CipherPassError::MalformedFormat(
+            "Invalid Bitwarden KDF salt length".into(),
+        ));
+    }
+
     let master_key = match kdf_type {
         0 => pbkdf2_hmac_sha256_32(password.as_bytes(), salt_str.as_bytes(), iterations)?,
         1 => {
-            let mem_mib = memory_mib.unwrap_or(64).clamp(16, 1024);
-            let lanes = parallelism.unwrap_or(4).clamp(1, 16);
-            let iters = iterations.clamp(1, 100);
+            let mem_mib = memory_mib.unwrap_or(64);
+            let lanes = parallelism.unwrap_or(4);
+            if !(16..=512).contains(&mem_mib) {
+                return Err(CipherPassError::UnsafeKdfParams(format!(
+                    "Bitwarden Argon2id memory {mem_mib} MiB outside safe bounds (16..=512 MiB)"
+                )));
+            }
+            if !(1..=16).contains(&lanes) {
+                return Err(CipherPassError::UnsafeKdfParams(format!(
+                    "Bitwarden Argon2id parallelism {lanes} outside safe bounds (1..=16)"
+                )));
+            }
+            if !(1..=64).contains(&iterations) {
+                return Err(CipherPassError::UnsafeKdfParams(format!(
+                    "Bitwarden Argon2id iterations {iterations} outside safe bounds (1..=64)"
+                )));
+            }
             let salt_hash = Sha256::digest(salt_str.as_bytes());
-            let params = Params::new(mem_mib * 1024, iters, lanes, Some(32))
+            let params = Params::new(mem_mib * 1024, iterations, lanes, Some(32))
                 .map_err(|e| CipherPassError::CryptoError(format!("Argon2id params error: {e}")))?;
             let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
             let mut key = Zeroizing::new([0u8; 32]);
@@ -345,7 +380,7 @@ fn bw_decrypt_string(
 }
 
 // =========================================================================
-// Folder Path Helper (Supports Nested "Parent/Child" Folders!)
+// Folder Path Helper (Supports Nested "Parent/Child" Folders, Depth-Capped)
 // =========================================================================
 
 fn ensure_folder_path<'a>(
@@ -358,6 +393,7 @@ fn ensure_folder_path<'a>(
         .split('/')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
+        .take(MAX_IMPORT_FOLDER_DEPTH)
     {
         let existing_idx = current
             .subgroups
@@ -395,6 +431,12 @@ pub fn import_bitwarden_json(
     password: Option<&str>,
     target_vault: &mut Vault,
 ) -> Result<ImportSummary> {
+    if raw_bytes.len() > MAX_INTERCHANGE_INPUT_BYTES {
+        return Err(CipherPassError::MalformedFormat(
+            "Bitwarden JSON file exceeds 64 MiB safety limit".into(),
+        ));
+    }
+
     let env: BwEnvelope = serde_json::from_slice(raw_bytes).map_err(|e| {
         CipherPassError::MalformedFormat(format!("Invalid Bitwarden JSON file: {e}"))
     })?;
@@ -406,15 +448,12 @@ pub fn import_bitwarden_json(
                     .into(),
             ));
         }
-        let pw = password
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                CipherPassError::CryptoError(
-                    "This Bitwarden JSON is password-protected. Enter the export password to decrypt it."
-                        .into(),
-                )
-            })?;
+        let pw = password.filter(|s| !s.is_empty()).ok_or_else(|| {
+            CipherPassError::CryptoError(
+                "This Bitwarden JSON is password-protected. Enter the export password to decrypt it."
+                    .into(),
+            )
+        })?;
         let salt = env.salt.as_deref().ok_or_else(|| {
             CipherPassError::MalformedFormat("Missing salt in encrypted Bitwarden JSON".into())
         })?;
@@ -438,16 +477,25 @@ pub fn import_bitwarden_json(
         }
 
         let decrypted = bw_decrypt_string(data_enc, &enc_key, &mac_key)?;
+        if decrypted.len() > MAX_INTERCHANGE_INPUT_BYTES {
+            return Err(CipherPassError::MalformedFormat(
+                "Decrypted Bitwarden JSON payload exceeds 64 MiB safety limit".into(),
+            ));
+        }
         let inner: BwEnvelope = serde_json::from_slice(decrypted.as_slice()).map_err(|e| {
             CipherPassError::MalformedFormat(format!("Decrypted JSON payload malformed: {e}"))
         })?;
         (
-            inner.folders,
-            inner.items,
+            inner.folders.clone(),
+            inner.items.clone(),
             "Encrypted JSON (Bitwarden / CipherPass)".to_string(),
         )
     } else {
-        (env.folders, env.items, "Bitwarden JSON".to_string())
+        (
+            env.folders.clone(),
+            env.items.clone(),
+            "Bitwarden JSON".to_string(),
+        )
     };
 
     let mut folder_map = std::collections::HashMap::new();
@@ -463,14 +511,14 @@ pub fn import_bitwarden_json(
     let mut imported_entries = 0usize;
     let mut skipped_items = 0usize;
 
-    for item in items {
+    for item in &items {
         let title = if item.name.trim().is_empty() {
             "(Untitled)".to_string()
         } else {
             item.name.trim().to_string()
         };
         let mut entry = VaultEntry::new(title);
-        entry.notes = item.notes.unwrap_or_default();
+        entry.notes = item.notes.clone().unwrap_or_default();
         if item.favorite {
             entry.set_favorite(true);
         }
@@ -479,9 +527,10 @@ pub fn import_bitwarden_json(
             // 1 = Login
             1 => {
                 push_cf(&mut entry, "EntryType", "login", false);
-                if let Some(login) = item.login {
-                    entry.username = login.username.unwrap_or_default();
-                    entry.password = ProtectedString::new(login.password.unwrap_or_default());
+                if let Some(ref login) = item.login {
+                    entry.username = login.username.clone().unwrap_or_default();
+                    entry.password =
+                        ProtectedString::new(login.password.as_deref().unwrap_or_default());
                     if let Some(first_uri) = login
                         .uris
                         .first()
@@ -513,7 +562,7 @@ pub fn import_bitwarden_json(
             // 3 = Card
             3 => {
                 push_cf(&mut entry, "EntryType", "card", false);
-                if let Some(card) = item.card {
+                if let Some(ref card) = item.card {
                     if let Some(ref ch) = card.cardholder_name {
                         entry.username = ch.trim().to_string();
                         push_cf(&mut entry, "Cardholder", ch, false);
@@ -548,14 +597,18 @@ pub fn import_bitwarden_json(
             // 4 = Identity
             4 => {
                 push_cf(&mut entry, "EntryType", "note", false);
-                if let Some(id) = item.identity {
-                    let full_name = [id.first_name, id.middle_name, id.last_name]
-                        .into_iter()
-                        .flatten()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                if let Some(ref id) = item.identity {
+                    let full_name = [
+                        id.first_name.as_deref(),
+                        id.middle_name.as_deref(),
+                        id.last_name.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                     push_cf(&mut entry, "Full Name", &full_name, false);
                     if let Some(ref u) = id.username {
                         push_cf(&mut entry, "Username", u, false);
@@ -578,13 +631,17 @@ pub fn import_bitwarden_json(
                     if let Some(ref lic) = id.license_number {
                         push_cf(&mut entry, "License", lic, true);
                     }
-                    let addr = [id.address1, id.city, id.country]
-                        .into_iter()
-                        .flatten()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let addr = [
+                        id.address1.as_deref(),
+                        id.city.as_deref(),
+                        id.country.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                     push_cf(&mut entry, "Address", &addr, false);
                 }
             }
@@ -594,11 +651,11 @@ pub fn import_bitwarden_json(
             }
         }
 
-        for cf in item.fields {
-            let k = cf.name.unwrap_or_default();
-            let v = cf.value.unwrap_or_default();
+        for cf in &item.fields {
+            let k = cf.name.as_deref().unwrap_or_default();
+            let v = cf.value.as_deref().unwrap_or_default();
             if !k.trim().is_empty() {
-                push_cf(&mut entry, k.trim(), &v, cf.field_type == 1);
+                push_cf(&mut entry, k.trim(), v, cf.field_type == 1);
             }
         }
 
@@ -1005,9 +1062,19 @@ fn parse_csv_rows(input: &str) -> Vec<Vec<String>> {
 }
 
 pub fn import_csv(raw_csv: &str, target_vault: &mut Vault) -> Result<ImportSummary> {
+    if raw_csv.len() > MAX_INTERCHANGE_INPUT_BYTES {
+        return Err(CipherPassError::MalformedFormat(
+            "CSV file exceeds 64 MiB safety limit".into(),
+        ));
+    }
     let clean = raw_csv.trim_start_matches('\u{feff}');
-    let rows = parse_csv_rows(clean);
+    let mut rows = parse_csv_rows(clean);
     if rows.len() < 2 {
+        for row in &mut rows {
+            for cell in row {
+                cell.zeroize();
+            }
+        }
         return Err(CipherPassError::MalformedFormat(
             "CSV file has no data rows".into(),
         ));
@@ -1029,6 +1096,11 @@ pub fn import_csv(raw_csv: &str, target_vault: &mut Vault) -> Result<ImportSumma
     let idx_type = col(&["type"]);
 
     if idx_title.is_none() && idx_user.is_none() && idx_pass.is_none() {
+        for row in &mut rows {
+            for cell in row {
+                cell.zeroize();
+            }
+        }
         return Err(CipherPassError::MalformedFormat(
             "Unrecognized CSV columns (expected Bitwarden or KeePass CSV header)".into(),
         ));
@@ -1090,6 +1162,12 @@ pub fn import_csv(raw_csv: &str, target_vault: &mut Vault) -> Result<ImportSumma
         );
         grp.entries.push(entry);
         imported_entries += 1;
+    }
+
+    for row in &mut rows {
+        for cell in row {
+            cell.zeroize();
+        }
     }
 
     Ok(ImportSummary {

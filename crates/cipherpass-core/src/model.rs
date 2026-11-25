@@ -258,16 +258,37 @@ impl VaultEntry {
     }
 
     pub fn zeroize_secrets(&mut self) {
+        self.username.zeroize();
         self.password.zeroize();
+        self.notes.zeroize();
         for f in &mut self.custom_fields {
             f.value.zeroize();
         }
         for h in &mut self.history {
+            h.username.zeroize();
             h.password.zeroize();
+            h.notes.zeroize();
             for f in &mut h.custom_fields {
                 f.value.zeroize();
             }
         }
+    }
+}
+
+impl Drop for EntryHistoryItem {
+    fn drop(&mut self) {
+        self.username.zeroize();
+        self.password.zeroize();
+        self.notes.zeroize();
+        for f in &mut self.custom_fields {
+            f.value.zeroize();
+        }
+    }
+}
+
+impl Drop for VaultEntry {
+    fn drop(&mut self) {
+        self.zeroize_secrets();
     }
 }
 

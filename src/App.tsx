@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import {
   applyScreenProtection,
+  isTauriRuntime,
   loadBackgroundLockSeconds,
   loadMaskEntrySubtitles,
   loadScreenProtection,
@@ -215,12 +216,15 @@ export const App: React.FC = () => {
     try {
       const s = await vaultApi.lockVault();
       setStatus(s);
-      setSelectedEntry(null);
-      setCreatingNew(false);
-      setEntries([]);
-      setGroups(null);
     } catch {
       setStatus((prev) => (prev ? { ...prev, unlocked: false } : prev));
+    } finally {
+      setSelectedEntry(null);
+      setCreatingNew(false);
+      setFocusTotpOnCreate(false);
+      setSearchQuery("");
+      setEntries([]);
+      setGroups(null);
     }
   }, []);
 
@@ -257,6 +261,9 @@ export const App: React.FC = () => {
     vaultApi.onAutoLocked(() => {
       setStatus((prev) => (prev ? { ...prev, unlocked: false } : prev));
       setSelectedEntry(null);
+      setCreatingNew(false);
+      setFocusTotpOnCreate(false);
+      setSearchQuery("");
       setEntries([]);
       setGroups(null);
       showToast("Vault auto-locked & secrets zeroized in memory.");
@@ -285,15 +292,29 @@ export const App: React.FC = () => {
       return;
     }
 
+    let bgTimer: number | null = null;
+    const clearBgTimer = () => {
+      if (bgTimer !== null) {
+        window.clearTimeout(bgTimer);
+        bgTimer = null;
+      }
+    };
+
     const handleBackground = () => {
+      clearBgTimer();
       if (bgLockSeconds === 1) {
         void handleLock();
       } else {
         backgroundedAtRef.current = Date.now();
+        bgTimer = window.setTimeout(() => {
+          bgTimer = null;
+          void handleLock();
+        }, bgLockSeconds * 1000);
       }
     };
 
     const handleForeground = () => {
+      clearBgTimer();
       const hiddenAt = backgroundedAtRef.current;
       backgroundedAtRef.current = null;
       if (hiddenAt !== null) {
@@ -315,6 +336,7 @@ export const App: React.FC = () => {
     document.addEventListener("visibilitychange", onVisibility);
     const unsubAndroidBg = onAndroidAppBackgrounded(handleBackground);
     return () => {
+      clearBgTimer();
       document.removeEventListener("visibilitychange", onVisibility);
       unsubAndroidBg();
     };
@@ -379,6 +401,11 @@ export const App: React.FC = () => {
       const secs = await vaultApi.copySecretWithAutoClear(secret);
       showToast(`${label} copied — clipboard auto-clears in ${secs}s`);
     } catch {
+      if (isTauriRuntime()) {
+        // Never fall back to navigator.clipboard inside Tauri, which would bypass auto-clear
+        showToast("Clipboard copy failed (auto-clear protection active)");
+        return;
+      }
       try {
         await navigator.clipboard.writeText(secret);
         showToast(`${label} copied`);
@@ -989,8 +1016,8 @@ export const App: React.FC = () => {
                           </div>
                         </button>
                       </div>
-                      {item.totp_uri && (
-                        <TotpBadge uriOrSecret={item.totp_uri} onCopy={handleCopy} compact />
+                      {item.has_totp && (
+                        <TotpBadge entryId={item.id} onCopy={handleCopy} compact />
                       )}
                     </div>
                   ))}

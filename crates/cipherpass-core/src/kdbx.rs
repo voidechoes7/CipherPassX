@@ -115,10 +115,10 @@ pub fn save_kdbx_bytes(vault: &Vault, credentials: &MasterCredentials) -> Result
         inner_stream_key.as_slice(),
     );
     for bin in &vault.inner_binaries {
-        let mut raw = Vec::with_capacity(1 + bin.data.len());
+        let mut raw = Zeroizing::new(Vec::with_capacity(1 + bin.data.len()));
         raw.push(bin.flags);
         raw.extend_from_slice(&bin.data);
-        write_tlv(&mut inner_payload, INNER_BINARY, &raw);
+        write_tlv(&mut inner_payload, INNER_BINARY, raw.as_slice());
     }
     write_tlv(&mut inner_payload, INNER_END_OF_HEADER, &[]);
     inner_payload.extend_from_slice(xml_bytes.as_slice());
@@ -168,6 +168,9 @@ pub fn save_kdbx_bytes(vault: &Vault, credentials: &MasterCredentials) -> Result
 
 /// Parse, authenticate, and decrypt a KDBX 4 / 4.1 vault from raw bytes.
 pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<Vault> {
+    const MAX_OUTER_TLV_FIELDS: usize = 64;
+    const MAX_INNER_TLV_FIELDS: usize = 2048;
+
     if data.len() < 12 {
         return Err(CipherPassError::InvalidSignature);
     }
@@ -189,6 +192,7 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
 
     // 1. Parse Outer Header TLV fields
     let mut offset = 12usize;
+    let mut outer_field_count = 0usize;
     let mut cipher: Option<CipherAlgorithm> = None;
     let mut compression: Option<bool> = None;
     let mut master_seed: Option<[u8; 32]> = None;
@@ -197,23 +201,35 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
     let mut public_custom_data: Option<VariantDictionary> = None;
 
     loop {
-        if offset + 5 > data.len() {
+        outer_field_count += 1;
+        if outer_field_count > MAX_OUTER_TLV_FIELDS {
+            return Err(CipherPassError::MalformedFormat(
+                "Outer header exceeds maximum TLV field count".into(),
+            ));
+        }
+        let header_tlv_end = offset.checked_add(5).ok_or_else(|| {
+            CipherPassError::MalformedFormat("Outer header TLV offset overflow".into())
+        })?;
+        if header_tlv_end > data.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Truncated outer header TLV".into(),
             ));
         }
         let field_id = data[offset];
         let field_len =
-            u32::from_le_bytes(data[offset + 1..offset + 5].try_into().unwrap()) as usize;
-        offset += 5;
+            u32::from_le_bytes(data[offset + 1..header_tlv_end].try_into().unwrap()) as usize;
+        offset = header_tlv_end;
 
-        if offset + field_len > data.len() {
+        let field_end = offset.checked_add(field_len).ok_or_else(|| {
+            CipherPassError::MalformedFormat("Outer header TLV length overflow".into())
+        })?;
+        if field_end > data.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Outer header TLV length exceeds file size".into(),
             ));
         }
-        let field_data = &data[offset..offset + field_len];
-        offset += field_len;
+        let field_data = &data[offset..field_end];
+        offset = field_end;
 
         match field_id {
             OUTER_END_OF_HEADER => break,
@@ -275,13 +291,16 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
     let (kdf_config, kdf_salt) = KdfConfig::from_variant_dict(&kdf_dict)?;
 
     // 2. Verify Header SHA-256 (fast integrity check before expensive KDF)
-    if header_end + 64 > data.len() {
+    let macs_end = header_end.checked_add(64).ok_or_else(|| {
+        CipherPassError::MalformedFormat("Header HMAC offset overflow".into())
+    })?;
+    if macs_end > data.len() {
         return Err(CipherPassError::MalformedFormat(
             "Truncated header hash / HMAC".into(),
         ));
     }
     let stored_header_sha256 = &data[header_end..header_end + 32];
-    let stored_header_hmac = &data[header_end + 32..header_end + 64];
+    let stored_header_hmac = &data[header_end + 32..macs_end];
 
     let computed_header_sha256 = Sha256::digest(header_bytes);
     if !constant_time_eq_32(&computed_header_sha256, stored_header_sha256) {
@@ -301,33 +320,39 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
     }
 
     // 4. Parse & authenticate HMAC Block Stream
-    let mut stream_offset = header_end + 64;
+    let mut stream_offset = macs_end;
     let mut block_index: u64 = 0;
     let mut ciphertext = Vec::new();
     let mut saw_terminator = false;
 
     while stream_offset < data.len() {
-        if stream_offset + 36 > data.len() {
+        let blk_hdr_end = stream_offset.checked_add(36).ok_or_else(|| {
+            CipherPassError::MalformedFormat("HMAC block header offset overflow".into())
+        })?;
+        if blk_hdr_end > data.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Truncated HMAC block header".into(),
             ));
         }
         let stored_block_hmac = &data[stream_offset..stream_offset + 32];
         let block_size = u32::from_le_bytes(
-            data[stream_offset + 32..stream_offset + 36]
+            data[stream_offset + 32..blk_hdr_end]
                 .try_into()
                 .unwrap(),
         );
-        stream_offset += 36;
+        stream_offset = blk_hdr_end;
 
         let block_len = block_size as usize;
-        if stream_offset + block_len > data.len() {
+        let blk_data_end = stream_offset.checked_add(block_len).ok_or_else(|| {
+            CipherPassError::MalformedFormat("HMAC block length overflow".into())
+        })?;
+        if blk_data_end > data.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Truncated HMAC block payload".into(),
             ));
         }
-        let block_data = &data[stream_offset..stream_offset + block_len];
-        stream_offset += block_len;
+        let block_data = &data[stream_offset..blk_data_end];
+        stream_offset = blk_data_end;
 
         let bkey = keys.block_hmac_key(block_index);
         let computed_block_hmac = compute_block_hmac(&bkey, block_index, block_size, block_data);
@@ -340,12 +365,19 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
             break;
         }
         ciphertext.extend_from_slice(block_data);
-        block_index += 1;
+        block_index = block_index
+            .checked_add(1)
+            .ok_or_else(|| CipherPassError::MalformedFormat("HMAC block index overflow".into()))?;
     }
 
     if !saw_terminator {
         return Err(CipherPassError::MalformedFormat(
             "Missing terminating HMAC block".into(),
+        ));
+    }
+    if stream_offset != data.len() {
+        return Err(CipherPassError::MalformedFormat(
+            "Unexpected unauthenticated trailing data after KDBX HMAC block stream".into(),
         ));
     }
 
@@ -370,31 +402,44 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
 
     // 7. Parse Inner Header TLV fields
     let mut inner_off = 0usize;
+    let mut inner_field_count = 0usize;
     let mut inner_stream_id: u32 = 0;
     let mut inner_stream_key = Zeroizing::new(Vec::new());
     let mut inner_binaries = Vec::new();
 
     loop {
-        if inner_off + 5 > inner_bytes.len() {
+        inner_field_count += 1;
+        if inner_field_count > MAX_INNER_TLV_FIELDS {
+            return Err(CipherPassError::MalformedFormat(
+                "Inner header exceeds maximum TLV field count".into(),
+            ));
+        }
+        let inner_hdr_end = inner_off.checked_add(5).ok_or_else(|| {
+            CipherPassError::MalformedFormat("Inner header TLV offset overflow".into())
+        })?;
+        if inner_hdr_end > inner_bytes.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Truncated inner header TLV".into(),
             ));
         }
         let fid = inner_bytes[inner_off];
         let flen = u32::from_le_bytes(
-            inner_bytes[inner_off + 1..inner_off + 5]
+            inner_bytes[inner_off + 1..inner_hdr_end]
                 .try_into()
                 .unwrap(),
         ) as usize;
-        inner_off += 5;
+        inner_off = inner_hdr_end;
 
-        if inner_off + flen > inner_bytes.len() {
+        let inner_data_end = inner_off.checked_add(flen).ok_or_else(|| {
+            CipherPassError::MalformedFormat("Inner header TLV length overflow".into())
+        })?;
+        if inner_data_end > inner_bytes.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Inner header TLV exceeds decrypted payload".into(),
             ));
         }
-        let fdata = &inner_bytes[inner_off..inner_off + flen];
-        inner_off += flen;
+        let fdata = &inner_bytes[inner_off..inner_data_end];
+        inner_off = inner_data_end;
 
         match fid {
             INNER_END_OF_HEADER => break,

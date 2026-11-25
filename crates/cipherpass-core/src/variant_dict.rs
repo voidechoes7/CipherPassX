@@ -74,6 +74,8 @@ impl VariantDictionary {
             )));
         }
 
+        const MAX_VARIANT_DICT_ENTRIES: usize = 256;
+
         let mut offset = 2usize;
         let mut dict = Self::new();
 
@@ -84,43 +86,61 @@ impl VariantDictionary {
                 break;
             }
 
-            if offset + 4 > data.len() {
+            if dict.entries.len() >= MAX_VARIANT_DICT_ENTRIES {
+                return Err(CipherPassError::MalformedFormat(
+                    "VariantDictionary exceeds maximum allowed entry count".into(),
+                ));
+            }
+
+            let key_len_end = offset.checked_add(4).ok_or_else(|| {
+                CipherPassError::MalformedFormat("VariantDictionary offset overflow".into())
+            })?;
+            if key_len_end > data.len() {
                 return Err(CipherPassError::MalformedFormat(
                     "VariantDictionary truncated key length".into(),
                 ));
             }
-            let key_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset += 4;
+            let key_len = u32::from_le_bytes(data[offset..key_len_end].try_into().unwrap()) as usize;
+            offset = key_len_end;
 
-            if offset + key_len > data.len() {
+            let key_end = offset.checked_add(key_len).ok_or_else(|| {
+                CipherPassError::MalformedFormat("VariantDictionary key length overflow".into())
+            })?;
+            if key_end > data.len() {
                 return Err(CipherPassError::MalformedFormat(
                     "VariantDictionary truncated key".into(),
                 ));
             }
-            let key = std::str::from_utf8(&data[offset..offset + key_len])
+            let key = std::str::from_utf8(&data[offset..key_end])
                 .map_err(|_| {
                     CipherPassError::MalformedFormat(
                         "VariantDictionary key is not valid UTF-8".into(),
                     )
                 })?
                 .to_string();
-            offset += key_len;
+            offset = key_end;
 
-            if offset + 4 > data.len() {
+            let val_len_end = offset.checked_add(4).ok_or_else(|| {
+                CipherPassError::MalformedFormat("VariantDictionary offset overflow".into())
+            })?;
+            if val_len_end > data.len() {
                 return Err(CipherPassError::MalformedFormat(
                     "VariantDictionary truncated value length".into(),
                 ));
             }
-            let val_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset += 4;
+            let val_len = u32::from_le_bytes(data[offset..val_len_end].try_into().unwrap()) as usize;
+            offset = val_len_end;
 
-            if offset + val_len > data.len() {
+            let val_end = offset.checked_add(val_len).ok_or_else(|| {
+                CipherPassError::MalformedFormat("VariantDictionary value length overflow".into())
+            })?;
+            if val_end > data.len() {
                 return Err(CipherPassError::MalformedFormat(
                     "VariantDictionary truncated value".into(),
                 ));
             }
-            let raw = &data[offset..offset + val_len];
-            offset += val_len;
+            let raw = &data[offset..val_end];
+            offset = val_end;
 
             let value = match value_type {
                 0x04 => {

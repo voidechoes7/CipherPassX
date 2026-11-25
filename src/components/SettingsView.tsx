@@ -140,6 +140,7 @@ export const SettingsView: React.FC<Props> = ({
   const [pqKeypair, setPqKeypair] = useState<MlKem1024Keypair | null>(null);
   const [pqPubKey, setPqPubKey] = useState("");
   const [pqSecKey, setPqSecKey] = useState("");
+  const [showPqSecKey, setShowPqSecKey] = useState(false);
   const [pqSelfTest, setPqSelfTest] = useState<PqSelfTestResult | null>(null);
   const [runningSelfTest, setRunningSelfTest] = useState(false);
   const [sealingPq, setSealingPq] = useState(false);
@@ -377,7 +378,7 @@ export const SettingsView: React.FC<Props> = ({
     try {
       const summary = await vaultApi.importBitwardenJsonFile(
         src,
-        bwJsonPassword.trim() || null
+        bwJsonPassword || null
       );
       const updated = await vaultApi.getStatus();
       onStatusUpdated(updated);
@@ -528,6 +529,11 @@ export const SettingsView: React.FC<Props> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => {
+                  if (section === "crypto" && tab.id !== "crypto") {
+                    setPqKeypair(null);
+                    setPqSecKey("");
+                    setShowPqSecKey(false);
+                  }
                   setSection(tab.id);
                   setError(null);
                 }}
@@ -1488,6 +1494,21 @@ export const SettingsView: React.FC<Props> = ({
                         </button>
                         <button
                           type="button"
+                          onClick={() => setShowPqSecKey((v) => !v)}
+                          className="text-[10px] text-slate-300 hover:text-violet-300 flex items-center gap-0.5"
+                        >
+                          {showPqSecKey ? (
+                            <>
+                              <EyeOff className="w-3 h-3" /> Hide
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-3 h-3" /> Reveal
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onCopy(pqSecKey, "ML-KEM-1024 Secret Key")}
                           className="text-[10px] text-violet-300 flex items-center gap-0.5"
                         >
@@ -1497,13 +1518,24 @@ export const SettingsView: React.FC<Props> = ({
                     )}
                   </div>
                 </div>
-                <textarea
-                  rows={2}
-                  value={pqSecKey}
-                  onChange={(e) => setPqSecKey(e.target.value)}
-                  placeholder="Decapsulation key (3168 bytes)..."
-                  className="w-full rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-1.5 text-[10px] font-mono text-violet-200"
-                />
+                {showPqSecKey ? (
+                  <textarea
+                    rows={2}
+                    value={pqSecKey}
+                    onChange={(e) => setPqSecKey(e.target.value)}
+                    placeholder="Decapsulation key (3168 bytes)..."
+                    className="w-full rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-1.5 text-[10px] font-mono text-violet-200"
+                  />
+                ) : (
+                  <input
+                    type="password"
+                    value={pqSecKey}
+                    onChange={(e) => setPqSecKey(e.target.value)}
+                    placeholder="Decapsulation key (3168 bytes, masked)..."
+                    autoComplete="off"
+                    className="w-full rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-2 text-[10px] font-mono text-violet-200"
+                  />
+                )}
               </div>
             </div>
           </div>

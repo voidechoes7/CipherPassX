@@ -331,7 +331,7 @@ export const UnlockScreen: React.FC<Props> = ({
           parallelism,
           import_kind: importKind,
           import_source_path: importSourcePath.trim(),
-          import_password: importSourcePassword.trim() || null,
+          import_password: importSourcePassword || null,
         });
         setMasterPassword("");
         setConfirmPassword("");
@@ -378,6 +378,13 @@ export const UnlockScreen: React.FC<Props> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const clearTransientSecrets = () => {
+    setMasterPassword("");
+    setConfirmPassword("");
+    setImportSourcePassword("");
+    setUnsealSecretKey("");
   };
 
   const entropyBarColor =
@@ -427,6 +434,7 @@ export const UnlockScreen: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
+              clearTransientSecrets();
               setMode("open");
               setShowMasterGen(false);
               setError(null);
@@ -443,6 +451,7 @@ export const UnlockScreen: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
+              clearTransientSecrets();
               setMode("create");
               setVaultPath((curr) => (curr.startsWith("content://") ? "" : curr));
               setError(null);
@@ -459,6 +468,7 @@ export const UnlockScreen: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
+              clearTransientSecrets();
               setMode("import");
               setVaultPath((curr) => (curr.startsWith("content://") ? "" : curr));
               setError(null);

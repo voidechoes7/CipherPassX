@@ -19,7 +19,7 @@ pub enum TotpAlgorithm {
     Sha512,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TotpConfig {
     pub secret: Zeroizing<Vec<u8>>,
     pub algorithm: TotpAlgorithm,
@@ -27,6 +27,19 @@ pub struct TotpConfig {
     pub period: u64,
     pub issuer: String,
     pub account: String,
+}
+
+impl std::fmt::Debug for TotpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TotpConfig")
+            .field("secret", &"[REDACTED]")
+            .field("algorithm", &self.algorithm)
+            .field("digits", &self.digits)
+            .field("period", &self.period)
+            .field("issuer", &self.issuer)
+            .field("account", &self.account)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,9 +51,9 @@ pub struct TotpCode {
     pub account: String,
 }
 
-fn percent_decode(input: &str) -> String {
+fn percent_decode(input: &str) -> Zeroizing<String> {
     let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
+    let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
@@ -59,7 +72,7 @@ fn percent_decode(input: &str) -> String {
         }
         i += 1;
     }
-    String::from_utf8_lossy(&out).to_string()
+    Zeroizing::new(String::from_utf8_lossy(out.as_slice()).to_string())
 }
 
 fn decode_base32_secret(raw: &str) -> Result<Zeroizing<Vec<u8>>> {
@@ -136,7 +149,7 @@ pub fn parse_totp_uri(input: &str) -> Result<TotpConfig> {
             let key = k.to_ascii_lowercase();
             let val = percent_decode(v);
             match key.as_str() {
-                "secret" => secret_str = Some(Zeroizing::new(val)),
+                "secret" => secret_str = Some(val),
                 "issuer" => {
                     if !val.trim().is_empty() {
                         issuer = val.trim().to_string();
@@ -197,10 +210,12 @@ pub fn parse_totp_uri(input: &str) -> Result<TotpConfig> {
 
 /// Generate an RFC 6238 TOTP code at the specified UNIX timestamp (in seconds).
 pub fn generate_totp_at(config: &TotpConfig, unix_secs: u64) -> TotpCode {
-    let counter = unix_secs / config.period;
+    let period = config.period.clamp(1, 300);
+    let digits = config.digits.clamp(6, 8);
+    let counter = unix_secs / period;
     let counter_bytes = counter.to_be_bytes();
 
-    let digest: Vec<u8> = match config.algorithm {
+    let digest = Zeroizing::new(match config.algorithm {
         TotpAlgorithm::Sha1 => {
             let mut mac =
                 HmacSha1::new_from_slice(config.secret.as_slice()).expect("HMAC accepts any key");
@@ -219,7 +234,7 @@ pub fn generate_totp_at(config: &TotpConfig, unix_secs: u64) -> TotpCode {
             mac.update(&counter_bytes);
             mac.finalize().into_bytes().to_vec()
         }
-    };
+    });
 
     let offset = (digest[digest.len() - 1] & 0x0f) as usize;
     let bin_code: u32 = ((u32::from(digest[offset]) & 0x7f) << 24)
@@ -227,15 +242,15 @@ pub fn generate_totp_at(config: &TotpConfig, unix_secs: u64) -> TotpCode {
         | (u32::from(digest[offset + 2]) << 8)
         | u32::from(digest[offset + 3]);
 
-    let modulo = 10u32.pow(config.digits);
+    let modulo = 10u32.pow(digits);
     let otp = bin_code % modulo;
-    let code = format!("{:0width$}", otp, width = config.digits as usize);
-    let remaining_seconds = config.period - (unix_secs % config.period);
+    let code = format!("{:0width$}", otp, width = digits as usize);
+    let remaining_seconds = period - (unix_secs % period);
 
     TotpCode {
         code,
         remaining_seconds,
-        period: config.period,
+        period,
         issuer: config.issuer.clone(),
         account: config.account.clone(),
     }

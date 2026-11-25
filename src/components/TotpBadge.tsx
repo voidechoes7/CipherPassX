@@ -4,12 +4,18 @@ import { vaultApi } from "../api/vaultApi";
 import type { TotpCode } from "../types";
 
 interface Props {
-  uriOrSecret: string;
+  entryId?: string;
+  uriOrSecret?: string;
   onCopy: (secret: string, label: string) => void;
   compact?: boolean;
 }
 
-export const TotpBadge: React.FC<Props> = ({ uriOrSecret, onCopy, compact = false }) => {
+export const TotpBadge: React.FC<Props> = ({
+  entryId,
+  uriOrSecret,
+  onCopy,
+  compact = false,
+}) => {
   const [totp, setTotp] = useState<TotpCode | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -17,7 +23,12 @@ export const TotpBadge: React.FC<Props> = ({ uriOrSecret, onCopy, compact = fals
     let active = true;
     const refresh = async () => {
       try {
-        const res = await vaultApi.getTotpCode(uriOrSecret);
+        const res = entryId
+          ? await vaultApi.getEntryTotpCode(entryId)
+          : uriOrSecret
+          ? await vaultApi.getTotpCode(uriOrSecret)
+          : null;
+        if (!res) return;
         if (active) {
           setTotp(res);
           setErr(null);
@@ -32,7 +43,7 @@ export const TotpBadge: React.FC<Props> = ({ uriOrSecret, onCopy, compact = fals
       active = false;
       clearInterval(timer);
     };
-  }, [uriOrSecret]);
+  }, [entryId, uriOrSecret]);
 
   if (err) {
     return (

@@ -89,10 +89,11 @@ export function saveMaskEntrySubtitles(masked: boolean): void {
 export function loadBackgroundLockSeconds(): number {
   try {
     const raw = localStorage.getItem(BG_LOCK_SECS_KEY);
-    const n = raw ? Number(raw) : 0;
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (raw === null) return 60;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 60;
   } catch {
-    return 0;
+    return 60;
   }
 }
 
@@ -513,6 +514,9 @@ export const vaultApi = {
 
   getTotpCode: (uriOrSecret: string) =>
     invoke<TotpCode>("get_totp_code", { uriOrSecret }),
+
+  getEntryTotpCode: (entryId: string) =>
+    invoke<TotpCode>("get_entry_totp_code", { entryId }),
 
   generatePassword: (options: PasswordGenOptions) =>
     invoke<GeneratedSecret>("generate_password_cmd", { options }),

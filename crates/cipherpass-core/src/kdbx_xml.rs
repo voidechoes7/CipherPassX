@@ -368,6 +368,9 @@ pub fn serialize_kdbx_xml(
     Ok(Zeroizing::new(writer.into_inner().into_inner()))
 }
 
+/// Maximum allowed `<Group>` nesting depth in KDBX XML to prevent stack overflow DoS.
+const MAX_XML_GROUP_DEPTH: usize = 64;
+
 /// Recursive DOM-free streaming parser for KDBX 4 XML payloads.
 pub fn parse_kdbx_xml(
     xml_bytes: &[u8],
@@ -384,6 +387,11 @@ pub fn parse_kdbx_xml(
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
+            Ok(Event::DocType(_)) => {
+                return Err(CipherPassError::XmlError(
+                    "XML DOCTYPE declarations are forbidden in KDBX payloads".into(),
+                ));
+            }
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 b"Meta" => {
                     meta = parse_meta(&mut reader)?;
@@ -411,6 +419,11 @@ fn read_text_until_end(reader: &mut Reader<&[u8]>, end_tag: &[u8]) -> Result<Str
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
+            Ok(Event::DocType(_)) => {
+                return Err(CipherPassError::XmlError(
+                    "XML DOCTYPE declarations are forbidden in KDBX payloads".into(),
+                ));
+            }
             Ok(Event::Text(e)) => {
                 let s = e
                     .unescape()
@@ -587,7 +600,7 @@ fn parse_string_kv(
                             protected = true;
                         }
                     }
-                    let raw_text = read_text_until_end(reader, b"Value")?;
+                    let raw_text = Zeroizing::new(read_text_until_end(reader, b"Value")?);
                     if protected {
                         let decoded = base64::engine::general_purpose::STANDARD
                             .decode(raw_text.trim())
@@ -598,14 +611,16 @@ fn parse_string_kv(
                             })?;
                         let mut plain = Zeroizing::new(decoded);
                         inner_cipher.apply(plain.as_mut_slice());
-                        let s = String::from_utf8(plain.to_vec()).map_err(|_| {
+                        let owned_bytes = std::mem::take(&mut *plain);
+                        let s = String::from_utf8(owned_bytes).map_err(|err| {
+                            let _wiped = Zeroizing::new(err.into_bytes());
                             CipherPassError::XmlError(
                                 "Decrypted protected Value is not valid UTF-8".into(),
                             )
                         })?;
                         value = ProtectedString::new(s);
                     } else {
-                        value = ProtectedString::new(raw_text);
+                        value = ProtectedString::new(raw_text.as_str());
                     }
                 }
                 _ => {}
@@ -641,6 +656,7 @@ fn parse_tags(raw: &str) -> Vec<String> {
 fn parse_entry(
     reader: &mut Reader<&[u8]>,
     inner_cipher: &mut InnerStreamCipher,
+    in_history: bool,
 ) -> Result<VaultEntry> {
     let mut entry = VaultEntry::new("");
     let mut buf = Vec::new();
@@ -693,21 +709,26 @@ fn parse_entry(
                     }
                 }
                 b"History" => {
+                    if in_history {
+                        return Err(CipherPassError::XmlError(
+                            "Nested <History> elements are forbidden in KDBX XML".into(),
+                        ));
+                    }
                     let mut hbuf = Vec::new();
                     loop {
                         hbuf.clear();
                         match reader.read_event_into(&mut hbuf) {
                             Ok(Event::Start(he)) if he.name().as_ref() == b"Entry" => {
-                                let hist_e = parse_entry(reader, inner_cipher)?;
+                                let hist_e = parse_entry(reader, inner_cipher, true)?;
                                 entry.history.push(EntryHistoryItem {
-                                    title: hist_e.title,
-                                    username: hist_e.username,
-                                    password: hist_e.password,
-                                    url: hist_e.url,
-                                    notes: hist_e.notes,
-                                    tags: hist_e.tags,
-                                    custom_fields: hist_e.custom_fields,
-                                    times: hist_e.times,
+                                    title: hist_e.title.clone(),
+                                    username: hist_e.username.clone(),
+                                    password: hist_e.password.clone(),
+                                    url: hist_e.url.clone(),
+                                    notes: hist_e.notes.clone(),
+                                    tags: hist_e.tags.clone(),
+                                    custom_fields: hist_e.custom_fields.clone(),
+                                    times: hist_e.times.clone(),
                                 });
                             }
                             Ok(Event::End(he)) if he.name().as_ref() == b"History" => break,
@@ -732,7 +753,13 @@ fn parse_entry(
 fn parse_group(
     reader: &mut Reader<&[u8]>,
     inner_cipher: &mut InnerStreamCipher,
+    depth: usize,
 ) -> Result<VaultGroup> {
+    if depth > MAX_XML_GROUP_DEPTH {
+        return Err(CipherPassError::XmlError(format!(
+            "KDBX XML group nesting exceeds maximum depth ({MAX_XML_GROUP_DEPTH})"
+        )));
+    }
     let mut group = VaultGroup::new("", 48);
     let mut buf = Vec::new();
 
@@ -755,8 +782,10 @@ fn parse_group(
                     group.is_expanded = parse_bool(&read_text_until_end(reader, b"IsExpanded")?)
                 }
                 b"Times" => group.times = parse_times(reader)?,
-                b"Entry" => group.entries.push(parse_entry(reader, inner_cipher)?),
-                b"Group" => group.subgroups.push(parse_group(reader, inner_cipher)?),
+                b"Entry" => group.entries.push(parse_entry(reader, inner_cipher, false)?),
+                b"Group" => group
+                    .subgroups
+                    .push(parse_group(reader, inner_cipher, depth + 1)?),
                 _ => {}
             },
             Ok(Event::End(e)) if e.name().as_ref() == b"Group" => break,
@@ -817,7 +846,7 @@ fn parse_root(
         buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"Group" => root_group = Some(parse_group(reader, inner_cipher)?),
+                b"Group" => root_group = Some(parse_group(reader, inner_cipher, 0)?),
                 b"DeletedObjects" => deleted = parse_deleted_objects(reader)?,
                 _ => {}
             },

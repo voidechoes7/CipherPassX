@@ -98,7 +98,6 @@ export interface EntrySummary {
   url: string;
   favorite: boolean;
   has_totp: boolean;
-  totp_uri: string | null;
   tags: string[];
   modified_at: string;
 }
