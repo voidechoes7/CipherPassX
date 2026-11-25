@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  Clock,
   Copy,
   CreditCard,
   Eraser,
@@ -197,6 +199,73 @@ export const App: React.FC = () => {
       setToast((curr) => (curr === msg ? null : curr));
     }, 3500);
   }, []);
+
+  // Press-and-hold (long-press) quick password copy on vault entries
+  const [pressingEntryId, setPressingEntryId] = useState<string | null>(null);
+  const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressTriggeredRef = useRef<boolean>(false);
+
+  const quickCopyEntryPassword = useCallback(
+    async (item: EntrySummary) => {
+      try {
+        const secs = await vaultApi.copyEntryPassword(item.id);
+        try {
+          navigator.vibrate?.(35);
+        } catch {
+          // vibrate unsupported
+        }
+        setCopiedEntryId(item.id);
+        setTimeout(() => {
+          setCopiedEntryId((curr) => (curr === item.id ? null : curr));
+        }, 1600);
+        showToast(`"${item.title || "Password"}" copied — clears in ${secs}s`);
+      } catch (err) {
+        showToast(String(err));
+      }
+    },
+    [showToast]
+  );
+
+  const cancelEntryLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+    setPressingEntryId(null);
+  }, []);
+
+  const startEntryLongPress = useCallback(
+    (item: EntrySummary, e: React.PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      cancelEntryLongPress();
+      longPressTriggeredRef.current = false;
+      longPressStartRef.current = { x: e.clientX, y: e.clientY };
+      setPressingEntryId(item.id);
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        longPressTriggeredRef.current = true;
+        setPressingEntryId(null);
+        quickCopyEntryPassword(item);
+      }, 420);
+    },
+    [cancelEntryLongPress, quickCopyEntryPassword]
+  );
+
+  const moveEntryLongPress = useCallback(
+    (e: React.PointerEvent) => {
+      const start = longPressStartRef.current;
+      if (!start) return;
+      const dx = Math.abs(e.clientX - start.x);
+      const dy = Math.abs(e.clientY - start.y);
+      if (dx > 10 || dy > 10) {
+        cancelEntryLongPress();
+      }
+    },
+    [cancelEntryLongPress]
+  );
 
   const refreshVaultData = useCallback(async () => {
     try {
@@ -814,8 +883,10 @@ export const App: React.FC = () => {
               <WifiOff className="w-3 h-3" />
               OFFLINE
             </span>
-            <UiStylePicker uiStyle={uiStyle} onChange={setUiStyle} compact />
-            <ThemePicker theme={theme} onChange={setTheme} compact />
+            <div className="hidden sm:flex items-center gap-1.5">
+              <UiStylePicker uiStyle={uiStyle} onChange={setUiStyle} compact />
+              <ThemePicker theme={theme} onChange={setTheme} compact />
+            </div>
             <button
               type="button"
               onClick={async () => {
@@ -1114,8 +1185,18 @@ export const App: React.FC = () => {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Instant local search... (Ctrl+K)"
-                      className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
+                      className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-9 pr-8 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
                     />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-500 hover:text-white"
+                        aria-label="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1286,6 +1367,28 @@ export const App: React.FC = () => {
                     <ChevronRight className="w-3 h-3 shrink-0 opacity-70" />
                   </button>
                 </div>
+
+                {/* Compact Practical Hint + Quick Clipboard Timer Shortcut */}
+                {!isViewingRecycleBin && (
+                  <div className="flex items-center justify-between gap-2 px-0.5 text-[10px] text-slate-400">
+                    <span className="truncate">
+                      Hold any item to copy password
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("settings")}
+                      className="inline-flex items-center gap-1 font-mono text-cyan-300/90 hover:text-cyan-200 shrink-0"
+                      title="Change clipboard auto-clear limit in Settings"
+                    >
+                      <Clock className="w-3 h-3" />
+                      {status.clipboard_clear_seconds >= 60 &&
+                      status.clipboard_clear_seconds % 60 === 0
+                        ? `${status.clipboard_clear_seconds / 60}m`
+                        : `${status.clipboard_clear_seconds}s`}{" "}
+                      clear
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
@@ -1314,22 +1417,50 @@ export const App: React.FC = () => {
                 ) : (
                   entries.map((item) => {
                     const active = selectedEntry?.id === item.id && !creatingNew;
+                    const isPressing = pressingEntryId === item.id;
+                    const isCopied = copiedEntryId === item.id;
                     return (
                       <div
                         key={item.id}
-                        className={`px-3.5 py-3 flex items-center justify-between gap-2 transition ${
-                          active
+                        className={`px-3.5 py-3 flex items-center justify-between gap-2 transition select-none ${
+                          isCopied
+                            ? "bg-emerald-500/15 border-l-2 border-emerald-400"
+                            : isPressing
+                            ? "bg-cyan-500/15 scale-[0.99]"
+                            : active
                             ? "bg-cyan-500/10 border-l-2 border-cyan-400"
                             : "hover:bg-slate-800/40"
                         }`}
                       >
                         <button
                           type="button"
-                          onClick={() => handleSelectEntry(item.id)}
+                          onPointerDown={
+                            isViewingRecycleBin
+                              ? undefined
+                              : (e) => startEntryLongPress(item, e)
+                          }
+                          onPointerMove={isViewingRecycleBin ? undefined : moveEntryLongPress}
+                          onPointerUp={cancelEntryLongPress}
+                          onPointerCancel={cancelEntryLongPress}
+                          onPointerLeave={cancelEntryLongPress}
+                          onContextMenu={(e) => {
+                            if (!isViewingRecycleBin) e.preventDefault();
+                          }}
+                          onClick={() => {
+                            if (longPressTriggeredRef.current) {
+                              longPressTriggeredRef.current = false;
+                              return;
+                            }
+                            handleSelectEntry(item.id);
+                          }}
                           className="flex-1 min-w-0 text-left flex items-center gap-2.5"
                         >
-                          <div className="w-8 h-8 rounded-lg bg-[#07090F] border border-slate-800 flex items-center justify-center shrink-0">
-                            {renderEntryTypeIcon(item.entry_type)}
+                          <div className="w-9 h-9 rounded-xl bg-[#07090F] border border-slate-800 flex items-center justify-center shrink-0">
+                            {isCopied ? (
+                              <Check className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              renderEntryTypeIcon(item.entry_type)
+                            )}
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
@@ -1349,7 +1480,9 @@ export const App: React.FC = () => {
                               )}
                             </div>
                             <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
-                              {maskSubtitles
+                              {isCopied
+                                ? "Password copied to clipboard"
+                                : maskSubtitles
                                 ? "••••••••"
                                 : item.username || item.url || "Encrypted record"}
                             </div>
@@ -1385,7 +1518,7 @@ export const App: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleCopy(item.username, "Username")}
-                                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition"
+                                  className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition"
                                   title="Quick copy username"
                                 >
                                   <User className="w-3.5 h-3.5" />
@@ -1394,18 +1527,19 @@ export const App: React.FC = () => {
                               {(item.entry_type === "login" || item.entry_type === "dev") && (
                                 <button
                                   type="button"
-                                  onClick={async () => {
-                                    try {
-                                      const secs = await vaultApi.copyEntryPassword(item.id);
-                                      showToast(`Secret copied — clears in ${secs}s`);
-                                    } catch (err) {
-                                      showToast(String(err));
-                                    }
-                                  }}
-                                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
+                                  onClick={() => quickCopyEntryPassword(item)}
+                                  className={`p-2 rounded-xl border transition ${
+                                    isCopied
+                                      ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-300"
+                                      : "bg-slate-900 hover:bg-cyan-500/15 border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300"
+                                  }`}
                                   title="Quick copy password / token (auto-clear)"
                                 >
-                                  <Copy className="w-3.5 h-3.5" />
+                                  {isCopied ? (
+                                    <Check className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
                                 </button>
                               )}
                             </>

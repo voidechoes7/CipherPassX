@@ -31,8 +31,18 @@ pub struct SecurityAuditReport {
 }
 
 /// Run a 100% offline cryptographic & password-hygiene audit on the unlocked vault.
+/// Entries in the Recycle Bin are excluded so deleted credentials do not penalize the score.
 pub fn run_vault_audit(vault: &Vault) -> SecurityAuditReport {
-    let entries = vault.all_entries();
+    let recycle_id = if vault.meta.recycle_bin_enabled && !vault.meta.recycle_bin_uuid.is_nil() {
+        Some(vault.meta.recycle_bin_uuid)
+    } else {
+        None
+    };
+    let entries: Vec<_> = vault
+        .all_entries()
+        .into_iter()
+        .filter(|(gid, _)| Some(*gid) != recycle_id)
+        .collect();
     let total_entries = entries.len();
     let now = Utc::now();
 

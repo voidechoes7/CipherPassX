@@ -422,9 +422,10 @@ impl UnlockedSession {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AppConfig {
     auto_lock_seconds: u64,       // 0 = disabled, default 300 (5 min)
-    clipboard_clear_seconds: u64, // 15, 30, or 60
+    clipboard_clear_seconds: u64, // 5..=300, default 30
 }
 
 impl Default for AppConfig {
@@ -432,6 +433,42 @@ impl Default for AppConfig {
         Self {
             auto_lock_seconds: 300,
             clipboard_clear_seconds: 30,
+        }
+    }
+}
+
+fn app_config_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve app_local_data_dir: {e}"))?;
+    fs::create_dir_all(&base).map_err(|e| format!("Failed to create app data dir: {e}"))?;
+    Ok(base.join("app_config.json"))
+}
+
+fn load_app_config(app: &AppHandle) -> AppConfig {
+    let Ok(path) = app_config_file(app) else {
+        return AppConfig::default();
+    };
+    let mut cfg: AppConfig = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    cfg.clipboard_clear_seconds = cfg.clipboard_clear_seconds.clamp(5, 300);
+    cfg
+}
+
+fn save_app_config(app: &AppHandle, cfg: &AppConfig) {
+    let Ok(path) = app_config_file(app) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string_pretty(cfg) {
+        if fs::write(&path, json).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            }
         }
     }
 }
@@ -1941,7 +1978,11 @@ fn copy_entry_password(
             .root_group
             .find_entry(uuid)
             .ok_or_else(|| "Entry not found".to_string())?;
-        Zeroizing::new(entry.password.expose().to_string())
+        let pw = entry.password.expose();
+        if pw.is_empty() {
+            return Err("No password stored on this entry".to_string());
+        }
+        Zeroizing::new(pw.to_string())
     };
     copy_secret_with_auto_clear(secret.to_string(), None, app, state)
 }
@@ -2453,11 +2494,17 @@ async fn update_security_settings(
 ) -> Result<VaultStatusDto, String> {
     {
         let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
+        let mut cfg_changed = false;
         if let Some(secs) = req.auto_lock_seconds {
             cfg.auto_lock_seconds = secs;
+            cfg_changed = true;
         }
         if let Some(secs) = req.clipboard_clear_seconds {
             cfg.clipboard_clear_seconds = secs.clamp(5, 300);
+            cfg_changed = true;
+        }
+        if cfg_changed {
+            save_app_config(&app, &cfg);
         }
     }
 
@@ -3140,6 +3187,10 @@ pub fn run() {
         .manage(shared_state)
         .setup(move |app| {
             let app_handle = app.handle().clone();
+            let loaded_cfg = load_app_config(&app_handle);
+            if let Ok(mut cfg) = monitor_state.config.lock() {
+                *cfg = loaded_cfg;
+            }
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(5));
                 let auto_lock_secs = monitor_state

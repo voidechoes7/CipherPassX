@@ -24,6 +24,7 @@ import {
   checkBiometricAvailable,
   isMobilePlatform,
   isTauriRuntime,
+  loadBioGateAppStorage,
   loadHideRecentVaults,
   pickFolder,
   pickOpenCsvFile,
@@ -34,6 +35,7 @@ import {
   pickOpenPqKeyFile,
   pickSaveKdbxFile,
   pickSaveKeyfile,
+  promptBiometricAuth,
   saveHideRecentVaults,
   vaultApi,
 } from "../api/vaultApi";
@@ -109,6 +111,13 @@ export const UnlockScreen: React.FC<Props> = ({
 
   const openAppStoragePicker = async () => {
     setError(null);
+    if (loadBioGateAppStorage() && isMobilePlatform() && bioAvailable) {
+      const ok = await promptBiometricAuth("Verify identity to view App Private Storage vaults");
+      if (!ok) {
+        setError("Biometric verification cancelled — App Storage vault list remains hidden.");
+        return;
+      }
+    }
     if (isTauriRuntime()) {
       try {
         const refreshed = await vaultApi.listLocalVaults();

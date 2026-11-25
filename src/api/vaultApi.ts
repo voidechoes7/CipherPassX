@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { checkStatus as checkBiometricStatus } from "@tauri-apps/plugin-biometric";
+import {
+  authenticate as biometricAuthenticate,
+  checkStatus as checkBiometricStatus,
+} from "@tauri-apps/plugin-biometric";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type {
   ChangeCredentialsResult,
@@ -31,6 +34,7 @@ const HIDE_RECENT_KEY = "cipherpass_hide_recent_vaults_v1";
 const SCREEN_PROTECT_KEY = "cipherpass_screen_protect_v1";
 const MASK_SUBTITLES_KEY = "cipherpass_mask_subtitles_v1";
 const BG_LOCK_SECS_KEY = "cipherpass_bg_lock_secs_v1";
+const BIO_GATE_APP_STORAGE_KEY = "cipherpass_bio_gate_app_storage_v1";
 
 export function loadHideRecentVaults(): boolean {
   try {
@@ -45,6 +49,32 @@ export function saveHideRecentVaults(hide: boolean): void {
     localStorage.setItem(HIDE_RECENT_KEY, hide ? "true" : "false");
   } catch {
     // ignore storage restrictions
+  }
+}
+
+export function loadBioGateAppStorage(): boolean {
+  try {
+    return localStorage.getItem(BIO_GATE_APP_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveBioGateAppStorage(enabled: boolean): void {
+  try {
+    localStorage.setItem(BIO_GATE_APP_STORAGE_KEY, enabled ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
+
+export async function promptBiometricAuth(reason: string): Promise<boolean> {
+  if (!isTauriRuntime() || !isMobilePlatform()) return true;
+  try {
+    await biometricAuthenticate(reason, { allowDeviceCredential: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -3,6 +3,7 @@ import {
   ArrowDownUp,
   Atom,
   CheckCircle2,
+  Clock,
   Copy,
   Database,
   Download,
@@ -31,6 +32,7 @@ import {
 import {
   applyScreenProtection,
   isMobilePlatform,
+  loadBioGateAppStorage,
   loadHideRecentVaults,
   loadScreenProtection,
   pickOpenCsvFile,
@@ -44,6 +46,7 @@ import {
   pickSaveKeyfile,
   pickSavePqFile,
   pickSavePqKeyFile,
+  saveBioGateAppStorage,
   saveHideRecentVaults,
   vaultApi,
 } from "../api/vaultApi";
@@ -108,6 +111,9 @@ export const SettingsView: React.FC<Props> = ({
   const [autoLock, setAutoLock] = useState(status.auto_lock_seconds);
   const [clipClear, setClipClear] = useState(status.clipboard_clear_seconds);
   const [hideRecents, setHideRecents] = useState<boolean>(() => loadHideRecentVaults());
+  const [bioGateAppStorage, setBioGateAppStorage] = useState<boolean>(() =>
+    loadBioGateAppStorage()
+  );
   const [screenProtection, setScreenProtection] = useState<boolean>(() => loadScreenProtection());
 
   // Master Password & Keyfile Rotation State
@@ -662,15 +668,73 @@ export const SettingsView: React.FC<Props> = ({
             </button>
           </form>
 
-          {/* Privacy & Device Protection Controls */}
+          {/* Privacy, Clipboard & Device Protection Controls */}
           <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-4">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Shield className="w-4 h-4 cyber-accent-text" />
-              Privacy &amp; Device Protection
+              Privacy, Clipboard &amp; Device Protection
             </h3>
 
+            {/* 0. Clipboard Auto-Clear Limit (Instant & Persisted) */}
+            <div className="space-y-2.5 pt-1">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 cyber-accent-text" />
+                    Clipboard Auto-Clear Limit
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                    Applies to all copied secrets — including <strong>press-and-hold</strong> quick copy in your vault list. Saved automatically across restarts.
+                  </p>
+                </div>
+                <span className="text-xs font-mono font-bold text-cyan-300 bg-cyan-500/10 border border-cyan-400/30 px-2.5 py-1 rounded-lg shrink-0">
+                  {clipClear >= 60 && clipClear % 60 === 0
+                    ? `${clipClear / 60}m`
+                    : `${clipClear}s`}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { secs: 10, label: "10s" },
+                  { secs: 15, label: "15s" },
+                  { secs: 30, label: "30s" },
+                  { secs: 45, label: "45s" },
+                  { secs: 60, label: "60s" },
+                  { secs: 120, label: "2 min" },
+                  { secs: 300, label: "5 min" },
+                ].map((opt) => (
+                  <button
+                    key={opt.secs}
+                    type="button"
+                    onClick={async () => {
+                      setClipClear(opt.secs);
+                      setError(null);
+                      try {
+                        const updated = await vaultApi.updateSecuritySettings({
+                          clipboard_clear_seconds: opt.secs,
+                        });
+                        onStatusUpdated(updated);
+                        setMessage(
+                          `Clipboard auto-clear set to ${opt.label} (saved persistently).`
+                        );
+                      } catch (err) {
+                        setError(String(err));
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                      clipClear === opt.secs
+                        ? "cyber-btn-primary border-cyan-400/60"
+                        : "bg-[#07090F] border-slate-700/80 text-slate-300 hover:border-cyan-400/40 hover:text-white"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* 1. Entry List Privacy Mask */}
-            <div className="flex items-start justify-between gap-3 pt-1">
+            <div className="flex items-start justify-between gap-3 pt-3 border-t border-slate-800/80">
               <div>
                 <div className="text-xs font-semibold text-white flex items-center gap-1.5">
                   {maskSubtitles ? (
@@ -773,8 +837,8 @@ export const SettingsView: React.FC<Props> = ({
               </div>
             )}
 
-            {/* 4. Unlock Screen Privacy (Recent Vaults — strictly gated inside Settings) */}
-            <div className="space-y-2.5 pt-3 border-t border-slate-800/80">
+            {/* 4. Unlock Screen Privacy (Recent Vaults + Optional Biometric App Storage Gate) */}
+            <div className="space-y-3 pt-3 border-t border-slate-800/80">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold text-white flex items-center gap-1.5">
@@ -810,6 +874,41 @@ export const SettingsView: React.FC<Props> = ({
                   {hideRecents ? "Strictly Hidden" : "Visible"}
                 </button>
               </div>
+
+              {isMobilePlatform() && (
+                <div className="flex items-start justify-between gap-3 pt-2.5 border-t border-slate-800/60">
+                  <div>
+                    <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                      <Fingerprint className="w-3.5 h-3.5 text-cyan-400" />
+                      Biometric Lock on App Storage List
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                      Optional extra privacy: require fingerprint / Face ID before showing `.kdbx` filenames inside App Storage on the Unlock Screen.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !bioGateAppStorage;
+                      setBioGateAppStorage(next);
+                      saveBioGateAppStorage(next);
+                      setMessage(
+                        next
+                          ? "App Storage vault list now requires biometric verification."
+                          : "App Storage vault list no longer requires biometrics."
+                      );
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                      bioGateAppStorage
+                        ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
+                        : "bg-slate-800 border-slate-700 text-slate-300"
+                    }`}
+                  >
+                    {bioGateAppStorage ? "Required" : "Off"}
+                  </button>
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={async () => {
