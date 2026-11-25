@@ -152,8 +152,25 @@ export const UI_STYLES: UiStyleOption[] = [
   },
 ];
 
+export type FontScaleId = "compact" | "normal" | "large" | "xlarge";
+
+export interface FontScaleOption {
+  id: FontScaleId;
+  label: string;
+  px: string;
+  sample: string;
+}
+
+export const FONT_SCALES: FontScaleOption[] = [
+  { id: "compact", label: "Compact", px: "14.5px", sample: "90%" },
+  { id: "normal", label: "Default", px: "16px", sample: "100%" },
+  { id: "large", label: "Large", px: "18px", sample: "112%" },
+  { id: "xlarge", label: "Extra Large", px: "20px", sample: "125%" },
+];
+
 const THEME_STORAGE_KEY = "cipherpass_theme_v1";
 const STYLE_STORAGE_KEY = "cipherpass_ui_style_v1";
+const FONT_SCALE_STORAGE_KEY = "cipherpass_font_scale_v1";
 
 export function getThemeOption(themeId: ThemeId): ThemeOption {
   return THEMES.find((t) => t.id === themeId) ?? THEMES[4];
@@ -180,6 +197,18 @@ export function applyTheme(themeId: ThemeId): void {
   } catch {
     // ignore
   }
+  try {
+    const bridge = (
+      window as unknown as {
+        CipherPassAndroid?: {
+          setSystemBarsAppearance?: (isLight: boolean, bgHex: string) => boolean;
+        };
+      }
+    ).CipherPassAndroid;
+    bridge?.setSystemBarsAppearance?.(opt.mode === "light", opt.swatchBg);
+  } catch {
+    // ignore on non-Android platforms
+  }
 }
 
 export function loadSavedUiStyle(): UiStyleId {
@@ -198,6 +227,28 @@ export function applyUiStyle(styleId: UiStyleId): void {
   document.documentElement.setAttribute("data-ui-style", styleId);
   try {
     localStorage.setItem(STYLE_STORAGE_KEY, styleId);
+  } catch {
+    // ignore
+  }
+}
+
+export function loadSavedFontScale(): FontScaleId {
+  try {
+    const saved = localStorage.getItem(FONT_SCALE_STORAGE_KEY) as FontScaleId | null;
+    if (saved && FONT_SCALES.some((f) => f.id === saved)) {
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return "normal";
+}
+
+export function applyFontScale(scaleId: FontScaleId): void {
+  const opt = FONT_SCALES.find((f) => f.id === scaleId) ?? FONT_SCALES[1];
+  document.documentElement.style.fontSize = opt.px;
+  try {
+    localStorage.setItem(FONT_SCALE_STORAGE_KEY, opt.id);
   } catch {
     // ignore
   }

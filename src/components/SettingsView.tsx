@@ -21,27 +21,33 @@ import {
   Save,
   Shield,
   ShieldCheck,
+  Smartphone,
   Trash2,
+  Type,
   Unlock,
   Upload,
   Wand2,
 } from "lucide-react";
 import {
+  applyScreenProtection,
   isMobilePlatform,
   loadHideRecentVaults,
+  loadScreenProtection,
   pickOpenCsvFile,
   pickOpenJsonFile,
   pickOpenKdbxFile,
   pickOpenKeyfile,
   pickOpenPqFile,
+  pickOpenPqKeyFile,
   pickSaveJsonFile,
   pickSaveKdbxFile,
   pickSaveKeyfile,
   pickSavePqFile,
+  pickSavePqKeyFile,
   saveHideRecentVaults,
   vaultApi,
 } from "../api/vaultApi";
-import type { ThemeId, UiStyleId } from "../themes";
+import { FONT_SCALES, type FontScaleId, type ThemeId, type UiStyleId } from "../themes";
 import type {
   CipherAlgorithm,
   EntropyReport,
@@ -58,8 +64,14 @@ interface Props {
   status: VaultStatus;
   theme: ThemeId;
   uiStyle: UiStyleId;
+  fontScale: FontScaleId;
+  maskSubtitles: boolean;
+  bgLockSeconds: number;
   onThemeChange: (t: ThemeId) => void;
   onUiStyleChange: (s: UiStyleId) => void;
+  onFontScaleChange: (f: FontScaleId) => void;
+  onMaskSubtitlesChange: (m: boolean) => void;
+  onBgLockSecondsChange: (s: number) => void;
   onStatusUpdated: (status: VaultStatus) => void;
   onVaultDataChanged: () => void;
   onCopy: (secret: string, label: string) => void;
@@ -71,8 +83,14 @@ export const SettingsView: React.FC<Props> = ({
   status,
   theme,
   uiStyle,
+  fontScale,
+  maskSubtitles,
+  bgLockSeconds,
   onThemeChange,
   onUiStyleChange,
+  onFontScaleChange,
+  onMaskSubtitlesChange,
+  onBgLockSecondsChange,
   onStatusUpdated,
   onVaultDataChanged,
   onCopy,
@@ -90,6 +108,7 @@ export const SettingsView: React.FC<Props> = ({
   const [autoLock, setAutoLock] = useState(status.auto_lock_seconds);
   const [clipClear, setClipClear] = useState(status.clipboard_clear_seconds);
   const [hideRecents, setHideRecents] = useState<boolean>(() => loadHideRecentVaults());
+  const [screenProtection, setScreenProtection] = useState<boolean>(() => loadScreenProtection());
 
   // Master Password & Keyfile Rotation State
   const [currentPassword, setCurrentPassword] = useState("");
@@ -128,7 +147,7 @@ export const SettingsView: React.FC<Props> = ({
   // Biometric & Folder Modal states
   const [bioEnabled, setBioEnabled] = useState(false);
   const [folderModalMode, setFolderModalMode] = useState<
-    null | "move" | "backup" | "pq-seal" | "json-export"
+    null | "move" | "backup" | "pq-seal" | "json-export" | "pq-save-pub" | "pq-save-sec"
   >(null);
 
   useEffect(() => {
@@ -637,59 +656,171 @@ export const SettingsView: React.FC<Props> = ({
             </button>
           </form>
 
-          {/* Privacy Controls: Hide/Show Recent Vaults */}
-          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3">
-            <div className="flex items-start justify-between gap-3">
+          {/* Privacy & Device Protection Controls */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Shield className="w-4 h-4 cyber-accent-text" />
+              Privacy &amp; Device Protection
+            </h3>
+
+            {/* 1. Entry List Privacy Mask */}
+            <div className="flex items-start justify-between gap-3 pt-1">
               <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  {hideRecents ? (
-                    <EyeOff className="w-4 h-4 cyber-accent-text" />
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  {maskSubtitles ? (
+                    <EyeOff className="w-3.5 h-3.5 cyber-accent-text" />
                   ) : (
-                    <Eye className="w-4 h-4 cyber-accent-text" />
+                    <Eye className="w-3.5 h-3.5 cyber-accent-text" />
                   )}
-                  Unlock Screen Privacy (Recent Vaults)
-                </h3>
+                  Entry List Privacy Mask
+                </div>
                 <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
-                  Hide the list of recent &amp; saved vault files on the Unlock Screen so vault names are not exposed.
+                  Passwords are never displayed in the entry list. Enable this to also mask usernames and URLs as <code className="text-cyan-300">••••••••</code> until you tap an entry.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  const next = !hideRecents;
-                  setHideRecents(next);
-                  saveHideRecentVaults(next);
+                  const next = !maskSubtitles;
+                  onMaskSubtitlesChange(next);
                   setMessage(
                     next
-                      ? "Recent vaults are now hidden on the Unlock Screen."
-                      : "Recent vaults are now visible on the Unlock Screen."
+                      ? "Entry list privacy mask enabled — usernames & URLs are hidden."
+                      : "Entry list privacy mask disabled."
                   );
                 }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
-                  hideRecents
+                  maskSubtitles
                     ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
                     : "bg-slate-800 border-slate-700 text-slate-300"
                 }`}
               >
-                {hideRecents ? "Hidden (Private)" : "Visible"}
+                {maskSubtitles ? "Masked" : "Visible"}
               </button>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                setError(null);
-                try {
-                  await vaultApi.clearRecentVaults();
-                  setMessage("Recent vaults history wiped.");
-                } catch (err) {
-                  setError(String(err));
-                }
-              }}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 inline-flex items-center gap-1.5 transition"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-              Clear Recent Vaults History
-            </button>
+
+            {/* 2. Background / Minimize Auto-Lock */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-3 border-t border-slate-800/80">
+              <div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 cyber-accent-text" />
+                  Background / Minimize Auto-Lock
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                  Automatically lock &amp; zeroize RAM when switching apps or minimizing CipherPass.
+                </p>
+              </div>
+              <select
+                value={bgLockSeconds}
+                onChange={(e) => {
+                  const secs = Number(e.target.value);
+                  onBgLockSecondsChange(secs);
+                  setMessage(
+                    secs === 0
+                      ? "Background auto-lock disabled."
+                      : secs === 1
+                      ? "Vault will lock immediately when minimized or switched to background."
+                      : `Vault will lock after ${secs}s in background.`
+                  );
+                }}
+                className="rounded-xl bg-[#07090F] border border-slate-700 px-3 py-1.5 text-xs text-white shrink-0"
+              >
+                <option value={1}>Immediately</option>
+                <option value={30}>After 30 seconds</option>
+                <option value={60}>After 60 seconds</option>
+                <option value={0}>Off (inactivity only)</option>
+              </select>
+            </div>
+
+            {/* 3. Android Screen Protection (FLAG_SECURE) */}
+            {isMobilePlatform() && (
+              <div className="flex items-start justify-between gap-3 pt-3 border-t border-slate-800/80">
+                <div>
+                  <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                    Anti-Screenshot &amp; Recents Blanking (FLAG_SECURE)
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                    Blocks Android screenshots, screen recording, and blanks the app preview in the Recent Apps switcher.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !screenProtection;
+                    setScreenProtection(next);
+                    applyScreenProtection(next);
+                    setMessage(
+                      next
+                        ? "Android FLAG_SECURE enabled — screenshots & recents preview blocked."
+                        : "Android FLAG_SECURE disabled — screenshots are temporarily allowed."
+                    );
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                    screenProtection
+                      ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
+                      : "bg-amber-500/15 border-amber-400/40 text-amber-200"
+                  }`}
+                >
+                  {screenProtection ? "Protected" : "Off"}
+                </button>
+              </div>
+            )}
+
+            {/* 4. Unlock Screen Privacy (Recent Vaults — strictly gated inside Settings) */}
+            <div className="space-y-2.5 pt-3 border-t border-slate-800/80">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    {hideRecents ? (
+                      <EyeOff className="w-3.5 h-3.5 cyber-accent-text" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5 cyber-accent-text" />
+                    )}
+                    Hide Recent Vaults on Unlock Screen
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                    Completely hides recent vault names on the Unlock Screen with <strong>no Show button</strong>. Can only be re-enabled here after unlocking a vault.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !hideRecents;
+                    setHideRecents(next);
+                    saveHideRecentVaults(next);
+                    setMessage(
+                      next
+                        ? "Recent vaults are strictly hidden on the Unlock Screen (re-enable only inside Settings)."
+                        : "Recent vaults are now visible on the Unlock Screen."
+                    );
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                    hideRecents
+                      ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
+                      : "bg-slate-800 border-slate-700 text-slate-300"
+                  }`}
+                >
+                  {hideRecents ? "Strictly Hidden" : "Visible"}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  setError(null);
+                  try {
+                    await vaultApi.clearRecentVaults();
+                    setMessage("Recent vaults history wiped.");
+                  } catch (err) {
+                    setError(String(err));
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-300 inline-flex items-center gap-1.5 transition"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                Clear Recent Vaults History
+              </button>
+            </div>
           </div>
 
           {/* Change Master Password & Keyfile */}
@@ -1237,19 +1368,64 @@ export const SettingsView: React.FC<Props> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between gap-1 mb-1 flex-wrap">
                   <label className="text-[11px] text-slate-400">
                     ML-KEM-1024 Public Key (Base64)
                   </label>
-                  {pqPubKey && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => onCopy(pqPubKey, "ML-KEM-1024 Public Key")}
-                      className="text-[10px] text-cyan-300 flex items-center gap-1"
+                      onClick={async () => {
+                        setError(null);
+                        const picked = await pickOpenPqKeyFile();
+                        if (!picked) return;
+                        try {
+                          const content = await vaultApi.readTextFile(picked);
+                          setPqPubKey(content.trim());
+                          setMessage(`Loaded ML-KEM-1024 Public Key from ${picked}`);
+                        } catch (err) {
+                          setError(String(err));
+                        }
+                      }}
+                      className="text-[10px] text-slate-300 hover:text-cyan-300 flex items-center gap-0.5"
                     >
-                      <Copy className="w-3 h-3" /> Copy
+                      <Upload className="w-3 h-3" /> Load .pqpub
                     </button>
-                  )}
+                    {pqPubKey && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setError(null);
+                            if (isMobilePlatform()) {
+                              setFolderModalMode("pq-save-pub");
+                              return;
+                            }
+                            const dest = await pickSavePqKeyFile(
+                              `${safeBaseName}_MLKEM1024.pqpub`
+                            );
+                            if (!dest) return;
+                            try {
+                              const saved = await vaultApi.writeTextFile(dest, pqPubKey.trim());
+                              setMessage(`Saved ML-KEM-1024 Public Key to ${saved}`);
+                            } catch (err) {
+                              setError(String(err));
+                            }
+                          }}
+                          className="text-[10px] text-emerald-300 hover:underline flex items-center gap-0.5"
+                        >
+                          <Download className="w-3 h-3" /> Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCopy(pqPubKey, "ML-KEM-1024 Public Key")}
+                          className="text-[10px] text-cyan-300 flex items-center gap-0.5"
+                        >
+                          <Copy className="w-3 h-3" /> Copy
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <textarea
                   rows={2}
@@ -1260,19 +1436,66 @@ export const SettingsView: React.FC<Props> = ({
                 />
               </div>
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between gap-1 mb-1 flex-wrap">
                   <label className="text-[11px] text-slate-400">
                     ML-KEM-1024 Secret Key (Keep Offline)
                   </label>
-                  {pqSecKey && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => onCopy(pqSecKey, "ML-KEM-1024 Secret Key")}
-                      className="text-[10px] text-violet-300 flex items-center gap-1"
+                      onClick={async () => {
+                        setError(null);
+                        const picked = await pickOpenPqKeyFile();
+                        if (!picked) return;
+                        try {
+                          const content = await vaultApi.readTextFile(picked);
+                          setPqSecKey(content.trim());
+                          setMessage(`Loaded ML-KEM-1024 Secret Key from ${picked}`);
+                        } catch (err) {
+                          setError(String(err));
+                        }
+                      }}
+                      className="text-[10px] text-slate-300 hover:text-violet-300 flex items-center gap-0.5"
                     >
-                      <Copy className="w-3 h-3" /> Copy
+                      <Upload className="w-3 h-3" /> Load .pqkey
                     </button>
-                  )}
+                    {pqSecKey && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setError(null);
+                            if (isMobilePlatform()) {
+                              setFolderModalMode("pq-save-sec");
+                              return;
+                            }
+                            const dest = await pickSavePqKeyFile(
+                              `${safeBaseName}_MLKEM1024_SECRET.pqkey`
+                            );
+                            if (!dest) return;
+                            try {
+                              const saved = await vaultApi.writeTextFile(dest, pqSecKey.trim());
+                              setMessage(
+                                `Saved ML-KEM-1024 Secret Key to ${saved} — move it to offline/cold storage!`
+                              );
+                            } catch (err) {
+                              setError(String(err));
+                            }
+                          }}
+                          className="text-[10px] text-emerald-300 hover:underline flex items-center gap-0.5"
+                        >
+                          <Download className="w-3 h-3" /> Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCopy(pqSecKey, "ML-KEM-1024 Secret Key")}
+                          className="text-[10px] text-violet-300 flex items-center gap-0.5"
+                        >
+                          <Copy className="w-3 h-3" /> Copy
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <textarea
                   rows={2}
@@ -1542,10 +1765,51 @@ export const SettingsView: React.FC<Props> = ({
       )}
 
       {/* ============================================================
-          TAB 4: APPEARANCE — 4 COMPLETE GUI STYLES + 9 LIGHT/DARK THEMES
+          TAB 4: APPEARANCE — FONT SIZE, 4 GUI STYLES + 9 THEMES
          ============================================================ */}
       {section === "appearance" && (
         <div className="space-y-5 deck-animate">
+          {/* Font Size / Text Scale */}
+          <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Type className="w-4 h-4 cyber-accent-text" />
+                Font Size &amp; Readability
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Scale text across the entire app (saved locally on this device).
+              </p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {FONT_SCALES.map((opt) => {
+                const active = fontScale === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onFontScaleChange(opt.id)}
+                    className={`rounded-xl border px-3 py-2.5 text-left transition ${
+                      active
+                        ? "bg-cyan-500/15 border-cyan-400/50 text-cyan-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-300 hover:border-slate-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs font-bold">{opt.label}</span>
+                      <span className="text-[10px] font-mono text-slate-400">{opt.sample}</span>
+                    </div>
+                    <div
+                      className="text-slate-400 mt-1"
+                      style={{ fontSize: `${Math.round(11 * (parseFloat(opt.px) / 16))}px` }}
+                    >
+                      Aa Bb 123
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="cyber-panel rounded-2xl p-4 sm:p-5 space-y-3.5">
             <div>
               <h3 className="text-sm font-bold text-white">Graphic User Interface Style (4)</h3>
@@ -1568,11 +1832,15 @@ export const SettingsView: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Shared Folder Picker Modal for Move / Backup / PQ Seal / Encrypted JSON Export */}
+      {/* Shared Folder Picker Modal for Move / Backup / PQ Seal / PQ Keys / Encrypted JSON Export */}
       <FolderPickerModal
         open={folderModalMode !== null}
         title={
-          folderModalMode === "json-export"
+          folderModalMode === "pq-save-pub"
+            ? "Choose Folder for ML-KEM-1024 Public Key (.pqpub)"
+            : folderModalMode === "pq-save-sec"
+            ? "Choose Folder for ML-KEM-1024 Secret Key (.pqkey)"
+            : folderModalMode === "json-export"
             ? "Choose Folder for Encrypted .json Export"
             : folderModalMode === "pq-seal"
             ? "Choose Folder for Quantum .kdbx.pq Backup"
@@ -1581,14 +1849,22 @@ export const SettingsView: React.FC<Props> = ({
             : "Move Vault to Another Folder"
         }
         requiredExtension={
-          folderModalMode === "json-export"
+          folderModalMode === "pq-save-pub"
+            ? ".pqpub"
+            : folderModalMode === "pq-save-sec"
+            ? ".pqkey"
+            : folderModalMode === "json-export"
             ? ".json"
             : folderModalMode === "pq-seal"
             ? ".kdbx.pq"
             : ".kdbx"
         }
         defaultFileName={
-          folderModalMode === "json-export"
+          folderModalMode === "pq-save-pub"
+            ? `${safeBaseName}_MLKEM1024.pqpub`
+            : folderModalMode === "pq-save-sec"
+            ? `${safeBaseName}_MLKEM1024_SECRET.pqkey`
+            : folderModalMode === "json-export"
             ? `${safeBaseName}_Encrypted.json`
             : folderModalMode === "pq-seal"
             ? `${safeBaseName}_Quantum.kdbx.pq`
@@ -1615,6 +1891,14 @@ export const SettingsView: React.FC<Props> = ({
                 pqPubKey.trim()
               );
               setMessage(`Vault sealed with FIPS 203 ML-KEM-1024 to ${saved}`);
+            } else if (mode === "pq-save-pub") {
+              const saved = await vaultApi.writeTextFile(destPath, pqPubKey.trim());
+              setMessage(`Saved ML-KEM-1024 Public Key to ${saved}`);
+            } else if (mode === "pq-save-sec") {
+              const saved = await vaultApi.writeTextFile(destPath, pqSecKey.trim());
+              setMessage(
+                `Saved ML-KEM-1024 Secret Key to ${saved} — move it to offline/cold storage!`
+              );
             } else if (mode === "json-export") {
               setBusyInterchange(true);
               const saved = await vaultApi.exportEncryptedJsonFile(

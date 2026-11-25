@@ -24,6 +24,7 @@ export interface VaultStatus {
   keyfile_path: string | null;
   compression: boolean;
   pq_armor_available: boolean;
+  recycle_bin_id: string | null;
   entry_count: number;
   dirty: boolean;
   auto_lock_seconds: number;
@@ -204,4 +205,9 @@ export interface ImportSummary {
   imported_entries: number;
   created_folders: number;
   skipped_items: number;
+}
+
+export interface CreateVaultFromImportResult {
+  status: VaultStatus;
+  summary: ImportSummary;
 }

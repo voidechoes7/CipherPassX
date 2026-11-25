@@ -329,6 +329,7 @@ pub struct VaultStatusDto {
     pub keyfile_path: Option<String>,
     pub compression: bool,
     pub pq_armor_available: bool,
+    pub recycle_bin_id: Option<String>,
     pub entry_count: usize,
     pub dirty: bool,
     pub auto_lock_seconds: u64,
@@ -587,10 +588,70 @@ fn entry_to_detail(group_id: Uuid, e: &VaultEntry) -> EntryDetailDto {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateVaultFromImportRequest {
+    pub path: String,
+    pub database_name: String,
+    pub master_password: Option<String>,
+    pub keyfile_path: Option<String>,
+    pub cipher: CipherAlgorithm,
+    pub kdf_algorithm: KdfAlgorithm,
+    pub memory_mib: u64,
+    pub iterations: u64,
+    pub parallelism: u32,
+    /// "bitwarden_json" | "csv"
+    pub import_kind: String,
+    pub import_source_path: String,
+    pub import_password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateVaultFromImportResultDto {
+    pub status: VaultStatusDto,
+    pub summary: ImportSummary,
+}
+
+fn find_recycle_bin_uuid(vault: &Vault) -> Option<Uuid> {
+    if !vault.meta.recycle_bin_uuid.is_nil()
+        && vault
+            .root_group
+            .find_group(vault.meta.recycle_bin_uuid)
+            .is_some()
+    {
+        return Some(vault.meta.recycle_bin_uuid);
+    }
+    vault
+        .root_group
+        .subgroups
+        .iter()
+        .find(|g| g.name.eq_ignore_ascii_case("Recycle Bin"))
+        .map(|g| g.uuid)
+}
+
+fn ensure_recycle_bin(vault: &mut Vault) -> Uuid {
+    if let Some(id) = find_recycle_bin_uuid(vault) {
+        vault.meta.recycle_bin_uuid = id;
+        return id;
+    }
+    let trash = VaultGroup::new("Recycle Bin", 43);
+    let id = trash.uuid;
+    vault.root_group.subgroups.push(trash);
+    vault.meta.recycle_bin_uuid = id;
+    vault.meta.recycle_bin_enabled = true;
+    id
+}
+
 fn build_status(state: &SharedState) -> Result<VaultStatusDto, String> {
     let cfg = state.config.lock().map_err(|e| e.to_string())?;
     let sess_guard = state.session.lock().map_err(|e| e.to_string())?;
     if let Some(ref sess) = *sess_guard {
+        let rb_id = find_recycle_bin_uuid(&sess.vault);
+        let active_count = sess
+            .vault
+            .all_entries()
+            .into_iter()
+            .filter(|(gid, _)| rb_id.is_none_or(|rb| *gid != rb))
+            .count();
         Ok(VaultStatusDto {
             unlocked: true,
             path: Some(sess.location.display_string()),
@@ -609,7 +670,8 @@ fn build_status(state: &SharedState) -> Result<VaultStatusDto, String> {
             keyfile_path: sess.keyfile_path.clone(),
             compression: sess.vault.compression,
             pq_armor_available: true,
-            entry_count: sess.vault.all_entries().len(),
+            recycle_bin_id: rb_id.map(|u| u.to_string()),
+            entry_count: active_count,
             dirty: sess.dirty,
             auto_lock_seconds: cfg.auto_lock_seconds,
             clipboard_clear_seconds: cfg.clipboard_clear_seconds,
@@ -629,6 +691,7 @@ fn build_status(state: &SharedState) -> Result<VaultStatusDto, String> {
             keyfile_path: None,
             compression: true,
             pq_armor_available: true,
+            recycle_bin_id: None,
             entry_count: 0,
             dirty: false,
             auto_lock_seconds: cfg.auto_lock_seconds,
@@ -1369,6 +1432,7 @@ fn list_entries(
         .ok_or_else(|| "Vault is locked".to_string())?;
     sess.touch();
 
+    let rb_id = find_recycle_bin_uuid(&sess.vault);
     let raw_entries: Vec<(Uuid, &VaultEntry)> = if let Some(ref gid_str) = group_id {
         let gid = Uuid::parse_str(gid_str).map_err(|e| e.to_string())?;
         let grp = sess
@@ -1380,7 +1444,11 @@ fn list_entries(
         grp.collect_all_entries(&mut out);
         out
     } else {
-        sess.vault.all_entries()
+        sess.vault
+            .all_entries()
+            .into_iter()
+            .filter(|(gid, _)| rb_id.is_none_or(|rb| *gid != rb))
+            .collect()
     };
 
     let q_lower = query.unwrap_or_default().trim().to_lowercase();
@@ -1553,7 +1621,7 @@ fn delete_entry(
     entry_id: String,
     app: AppHandle,
     state: State<'_, Arc<SharedState>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let uuid = Uuid::parse_str(&entry_id).map_err(|e| e.to_string())?;
     let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
     let sess = sess_guard
@@ -1561,22 +1629,227 @@ fn delete_entry(
         .ok_or_else(|| "Vault is locked".to_string())?;
     sess.touch();
 
+    let rb_existing = find_recycle_bin_uuid(&sess.vault);
+    let in_recycle_bin = sess
+        .vault
+        .root_group
+        .find_entry(uuid)
+        .is_some_and(|(gid, _)| rb_existing == Some(gid));
+
     let mut removed = sess
         .vault
         .root_group
         .remove_entry(uuid)
         .ok_or_else(|| "Entry not found".to_string())?;
-    removed.zeroize_secrets();
 
-    sess.vault
-        .deleted_objects
-        .push(cipherpass_core::DeletedObject {
-            uuid,
-            deletion_time: Utc::now(),
-        });
+    let permanently_deleted = if in_recycle_bin || !sess.vault.meta.recycle_bin_enabled {
+        removed.zeroize_secrets();
+        sess.vault
+            .deleted_objects
+            .push(cipherpass_core::DeletedObject {
+                uuid,
+                deletion_time: Utc::now(),
+            });
+        true
+    } else {
+        let rb_id = ensure_recycle_bin(&mut sess.vault);
+        removed.times.location_changed = Utc::now();
+        if let Some(rb) = sess.vault.root_group.find_group_mut(rb_id) {
+            rb.entries.push(removed);
+        }
+        false
+    };
 
     persist_session(&app, sess)?;
-    Ok(())
+    Ok(permanently_deleted)
+}
+
+#[tauri::command]
+fn restore_entry(
+    entry_id: String,
+    target_group_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<EntryDetailDto, String> {
+    let uuid = Uuid::parse_str(&entry_id).map_err(|e| e.to_string())?;
+    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+    let sess = sess_guard
+        .as_mut()
+        .ok_or_else(|| "Vault is locked".to_string())?;
+    sess.touch();
+
+    let rb_id = find_recycle_bin_uuid(&sess.vault);
+    let mut entry = sess
+        .vault
+        .root_group
+        .remove_entry(uuid)
+        .ok_or_else(|| "Entry not found".to_string())?;
+
+    let dest_gid = target_group_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .filter(|id| rb_id != Some(*id))
+        .or_else(|| {
+            sess.vault
+                .root_group
+                .subgroups
+                .iter()
+                .find(|g| g.name.eq_ignore_ascii_case("General") && rb_id != Some(g.uuid))
+                .map(|g| g.uuid)
+        })
+        .or_else(|| {
+            sess.vault
+                .root_group
+                .subgroups
+                .iter()
+                .find(|g| rb_id != Some(g.uuid))
+                .map(|g| g.uuid)
+        })
+        .unwrap_or(sess.vault.root_group.uuid);
+
+    entry.times.location_changed = Utc::now();
+    let dto = entry_to_detail(dest_gid, &entry);
+    if let Some(grp) = sess.vault.root_group.find_group_mut(dest_gid) {
+        grp.entries.push(entry);
+    }
+    persist_session(&app, sess)?;
+    Ok(dto)
+}
+
+#[tauri::command]
+fn empty_recycle_bin(app: AppHandle, state: State<'_, Arc<SharedState>>) -> Result<usize, String> {
+    let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+    let sess = sess_guard
+        .as_mut()
+        .ok_or_else(|| "Vault is locked".to_string())?;
+    sess.touch();
+
+    let Some(rb_id) = find_recycle_bin_uuid(&sess.vault) else {
+        return Ok(0);
+    };
+
+    let mut count = 0usize;
+    let mut deleted_ids = Vec::new();
+    if let Some(rb) = sess.vault.root_group.find_group_mut(rb_id) {
+        for mut e in rb.entries.drain(..) {
+            deleted_ids.push(e.uuid);
+            e.zeroize_secrets();
+            count += 1;
+        }
+        for mut sub in rb.subgroups.drain(..) {
+            sub.zeroize_secrets();
+        }
+    }
+    for id in deleted_ids {
+        sess.vault
+            .deleted_objects
+            .push(cipherpass_core::DeletedObject {
+                uuid: id,
+                deletion_time: Utc::now(),
+            });
+    }
+
+    if count > 0 {
+        persist_session(&app, sess)?;
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+fn write_text_file(path: String, content: String, app: AppHandle) -> Result<String, String> {
+    let loc = resolve_location(&app, &path, ".txt")?;
+    write_bytes_to_location(&app, &loc, content.as_bytes())?;
+    Ok(loc.display_string())
+}
+
+#[tauri::command]
+fn read_text_file(path: String, app: AppHandle) -> Result<String, String> {
+    let loc = resolve_location(&app, &path, ".txt")?;
+    let bytes = read_bytes_from_location(&app, &loc)?;
+    String::from_utf8(bytes).map_err(|_| "Selected file is not valid UTF-8 text".to_string())
+}
+
+#[tauri::command]
+async fn create_vault_from_import(
+    req: CreateVaultFromImportRequest,
+    app: AppHandle,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<CreateVaultFromImportResultDto, String> {
+    let kdf = KdfConfig {
+        algorithm: req.kdf_algorithm,
+        memory_mib: req.memory_mib,
+        iterations: req.iterations,
+        parallelism: req.parallelism,
+        version: 0x13,
+    };
+    kdf.validate_safe_floor().map_err(|e| e.to_string())?;
+
+    let saved_kf_path = req
+        .keyfile_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let keyfile_bytes = match saved_kf_path {
+        Some(ref p) => {
+            let kf_loc = resolve_location(&app, p, ".keyx")?;
+            Some(read_bytes_from_location(&app, &kf_loc)?)
+        }
+        None => None,
+    };
+
+    let credentials =
+        MasterCredentials::from_password_and_keyfile(req.master_password, keyfile_bytes)
+            .map_err(|e| e.to_string())?;
+
+    let default_import_ext = if req.import_kind == "csv" {
+        ".csv"
+    } else {
+        ".json"
+    };
+    let src_loc = resolve_location(&app, &req.import_source_path, default_import_ext)?;
+    let raw_import = read_bytes_from_location(&app, &src_loc)?;
+
+    let location = resolve_location(&app, &req.path, ".kdbx")?;
+    let db_name = req.database_name.clone();
+    let cipher = req.cipher;
+    let import_kind = req.import_kind.clone();
+    let import_password = req.import_password.clone();
+
+    let (vault, credentials, summary, bytes) = tauri::async_runtime::spawn_blocking(move || {
+        let mut vault = Vault::new(db_name, cipher, kdf);
+        let summary = if import_kind == "csv" {
+            let csv_text = String::from_utf8(raw_import)
+                .map_err(|_| "CSV file must be valid UTF-8 text".to_string())?;
+            import_csv(&csv_text, &mut vault).map_err(|e| e.to_string())?
+        } else {
+            import_bitwarden_json(&raw_import, import_password.as_deref(), &mut vault)
+                .map_err(|e| e.to_string())?
+        };
+        let bytes =
+            Zeroizing::new(save_kdbx_bytes(&vault, &credentials).map_err(|e| e.to_string())?);
+        Ok::<_, String>((vault, credentials, summary, bytes))
+    })
+    .await
+    .map_err(|e| format!("Background vault import task failed: {e}"))??;
+
+    write_bytes_to_location(&app, &location, bytes.as_slice())?;
+    record_recent_vault(&app, &vault.meta.database_name, &location.display_string());
+
+    {
+        let mut sess_guard = state.session.lock().map_err(|e| e.to_string())?;
+        *sess_guard = Some(UnlockedSession {
+            vault,
+            credentials,
+            keyfile_path: saved_kf_path,
+            location,
+            last_activity: Instant::now(),
+            dirty: false,
+        });
+    }
+
+    let status = build_status(&state)?;
+    Ok(CreateVaultFromImportResultDto { status, summary })
 }
 
 #[tauri::command]
@@ -1765,7 +2038,7 @@ async fn change_master_credentials(
         if let Some(ref existing_pw) = sess.credentials.password {
             if !existing_pw.is_empty() {
                 let supplied = req.current_password.as_deref().unwrap_or("");
-                let eq = existing_pw.as_bytes().len() == supplied.len()
+                let eq = existing_pw.len() == supplied.len()
                     && bool::from(existing_pw.as_bytes().ct_eq(supplied.as_bytes()));
                 if !eq {
                     return Err("Current Master Password is incorrect.".to_string());
@@ -2219,11 +2492,14 @@ pub fn run() {
             clear_recent_vaults,
             get_vault_status,
             create_vault,
+            create_vault_from_import,
             open_vault,
             lock_vault,
             save_vault,
             move_vault_to_path,
             generate_keyfile_to_path,
+            write_text_file,
+            read_text_file,
             list_groups,
             create_group,
             rename_group,
@@ -2237,6 +2513,8 @@ pub fn run() {
             copy_entry_password,
             upsert_entry,
             delete_entry,
+            restore_entry,
+            empty_recycle_bin,
             toggle_favorite,
             get_totp_code,
             generate_password_cmd,

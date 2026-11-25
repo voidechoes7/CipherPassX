@@ -5,6 +5,8 @@ import {
   Copy,
   CreditCard,
   Eraser,
+  Eye,
+  EyeOff,
   FileText,
   Folder,
   FolderOpen,
@@ -13,6 +15,7 @@ import {
   Lock,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   Shield,
@@ -26,7 +29,16 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { vaultApi } from "./api/vaultApi";
+import {
+  applyScreenProtection,
+  loadBackgroundLockSeconds,
+  loadMaskEntrySubtitles,
+  loadScreenProtection,
+  onAndroidAppBackgrounded,
+  saveBackgroundLockSeconds,
+  saveMaskEntrySubtitles,
+  vaultApi,
+} from "./api/vaultApi";
 import { AuditView } from "./components/AuditView";
 import { EntryEditor } from "./components/EntryEditor";
 import { GeneratorPanel } from "./components/GeneratorPanel";
@@ -35,10 +47,13 @@ import { ThemePicker, UiStylePicker } from "./components/ThemePicker";
 import { TotpBadge } from "./components/TotpBadge";
 import { UnlockScreen } from "./components/UnlockScreen";
 import {
+  applyFontScale,
   applyTheme,
   applyUiStyle,
+  loadSavedFontScale,
   loadSavedTheme,
   loadSavedUiStyle,
+  type FontScaleId,
   type ThemeId,
   type UiStyleId,
 } from "./themes";
@@ -107,12 +122,17 @@ function countGroupRecursive(node: GroupNode): number {
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<ThemeId>(() => loadSavedTheme());
   const [uiStyle, setUiStyle] = useState<UiStyleId>(() => loadSavedUiStyle());
+  const [fontScale, setFontScale] = useState<FontScaleId>(() => loadSavedFontScale());
+  const [maskSubtitles, setMaskSubtitles] = useState<boolean>(() => loadMaskEntrySubtitles());
+  const [bgLockSeconds, setBgLockSeconds] = useState<number>(() => loadBackgroundLockSeconds());
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [groups, setGroups] = useState<GroupNode | null>(null);
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<EntryDetail | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
   const [focusTotpOnCreate, setFocusTotpOnCreate] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const backgroundedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     applyTheme(theme);
@@ -121,6 +141,24 @@ export const App: React.FC = () => {
   useEffect(() => {
     applyUiStyle(uiStyle);
   }, [uiStyle]);
+
+  useEffect(() => {
+    applyFontScale(fontScale);
+  }, [fontScale]);
+
+  useEffect(() => {
+    applyScreenProtection(loadScreenProtection());
+  }, []);
+
+  const handleMaskSubtitlesChange = useCallback((masked: boolean) => {
+    setMaskSubtitles(masked);
+    saveMaskEntrySubtitles(masked);
+  }, []);
+
+  const handleBgLockSecondsChange = useCallback((secs: number) => {
+    setBgLockSeconds(secs);
+    saveBackgroundLockSeconds(secs);
+  }, []);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("vault");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -155,7 +193,7 @@ export const App: React.FC = () => {
 
   const refreshVaultData = useCallback(async () => {
     try {
-      const [g, list] = await Promise.all([
+      const [g, list, s] = await Promise.all([
         vaultApi.listGroups(),
         vaultApi.listEntries({
           groupId: activeTab === "totp" ? null : selectedGroupId,
@@ -163,13 +201,28 @@ export const App: React.FC = () => {
           favoritesOnly: activeTab === "totp" ? false : favoritesOnly,
           totpOnly: activeTab === "totp",
         }),
+        vaultApi.getStatus(),
       ]);
       setGroups(g);
       setEntries(list);
+      setStatus(s);
     } catch {
       // Locked or unavailable
     }
   }, [activeTab, selectedGroupId, searchQuery, favoritesOnly]);
+
+  const handleLock = useCallback(async () => {
+    try {
+      const s = await vaultApi.lockVault();
+      setStatus(s);
+      setSelectedEntry(null);
+      setCreatingNew(false);
+      setEntries([]);
+      setGroups(null);
+    } catch {
+      setStatus((prev) => (prev ? { ...prev, unlocked: false } : prev));
+    }
+  }, []);
 
   useEffect(() => {
     vaultApi
@@ -191,6 +244,7 @@ export const App: React.FC = () => {
           compression: true,
           pq_armor_available: true,
           entry_count: 0,
+          recycle_bin_id: null,
           dirty: false,
           auto_lock_seconds: 300,
           clipboard_clear_seconds: 30,
@@ -224,6 +278,79 @@ export const App: React.FC = () => {
     }
   }, [status?.unlocked, refreshVaultData]);
 
+  // Background / Minimize Auto-Lock (works on Android onPause + Desktop/Web visibilitychange)
+  useEffect(() => {
+    if (!status?.unlocked || bgLockSeconds <= 0) {
+      backgroundedAtRef.current = null;
+      return;
+    }
+
+    const handleBackground = () => {
+      if (bgLockSeconds === 1) {
+        void handleLock();
+      } else {
+        backgroundedAtRef.current = Date.now();
+      }
+    };
+
+    const handleForeground = () => {
+      const hiddenAt = backgroundedAtRef.current;
+      backgroundedAtRef.current = null;
+      if (hiddenAt !== null) {
+        const elapsedSec = (Date.now() - hiddenAt) / 1000;
+        if (elapsedSec >= bgLockSeconds) {
+          void handleLock();
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        handleBackground();
+      } else {
+        handleForeground();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    const unsubAndroidBg = onAndroidAppBackgrounded(handleBackground);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      unsubAndroidBg();
+    };
+  }, [status?.unlocked, bgLockSeconds, handleLock]);
+
+  // Desktop Keyboard Shortcuts: Ctrl/Cmd+K (search), Ctrl/Cmd+N (new), Ctrl/Cmd+L (lock), Escape
+  useEffect(() => {
+    if (!status?.unlocked) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "k") {
+        e.preventDefault();
+        setActiveTab("vault");
+        setTimeout(() => searchInputRef.current?.focus(), 20);
+      } else if (mod && key === "n") {
+        e.preventDefault();
+        setActiveTab("vault");
+        setSelectedEntry(null);
+        setCreatingNew(true);
+        setFocusTotpOnCreate(false);
+      } else if (mod && key === "l") {
+        e.preventDefault();
+        void handleLock();
+      } else if (e.key === "Escape") {
+        if (searchQuery) {
+          setSearchQuery("");
+        } else if (showFolderBrowserMobile) {
+          setShowFolderBrowserMobile(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [status?.unlocked, handleLock, searchQuery, showFolderBrowserMobile]);
+
   const activeGroupTrail = useMemo(() => {
     if (!groups || !selectedGroupId) return null;
     return findGroupTrail(groups, selectedGroupId);
@@ -233,19 +360,6 @@ export const App: React.FC = () => {
     activeGroupTrail && activeGroupTrail.length > 0
       ? activeGroupTrail[activeGroupTrail.length - 1]
       : null;
-
-  const handleLock = async () => {
-    try {
-      const s = await vaultApi.lockVault();
-      setStatus(s);
-      setSelectedEntry(null);
-      setCreatingNew(false);
-      setEntries([]);
-      setGroups(null);
-    } catch {
-      setStatus((prev) => (prev ? { ...prev, unlocked: false } : prev));
-    }
-  };
 
   const handleSelectEntry = async (id: string) => {
     try {
@@ -392,8 +506,15 @@ export const App: React.FC = () => {
     );
   }
 
+  const isViewingRecycleBin = Boolean(
+    status.recycle_bin_id && selectedGroupId === status.recycle_bin_id
+  );
+
   const defaultGroupId =
-    selectedGroupId ?? groups?.subgroups[0]?.id ?? groups?.id ?? "";
+    (selectedGroupId && selectedGroupId !== status.recycle_bin_id ? selectedGroupId : null) ??
+    groups?.subgroups.find((g) => g.id !== status.recycle_bin_id)?.id ??
+    groups?.id ??
+    "";
 
   const showingEditorMobile = Boolean(selectedEntry || creatingNew);
   const activeTabIdx = Math.max(
@@ -405,11 +526,14 @@ export const App: React.FC = () => {
 
   const renderGroupTree = (node: GroupNode, depth = 0, onSelectExtra?: () => void) => {
     const isRoot = depth === 0;
+    const isRecycleBin = Boolean(status.recycle_bin_id && node.id === status.recycle_bin_id);
     const isSelected =
       activeTab === "vault" &&
       !favoritesOnly &&
       ((isRoot && selectedGroupId === null) || selectedGroupId === node.id);
-    const totalCount = countGroupRecursive(node);
+    const totalCount = isRoot
+      ? status.entry_count
+      : countGroupRecursive(node);
 
     return (
       <div key={node.id} className="space-y-0.5">
@@ -417,7 +541,9 @@ export const App: React.FC = () => {
           style={{ paddingLeft: `${8 + depth * 12}px` }}
           className={`group flex items-center justify-between gap-1 pr-1.5 py-1.5 rounded-lg text-xs transition ${
             isSelected
-              ? "bg-cyan-500/15 text-cyan-300 border border-cyan-400/25"
+              ? isRecycleBin
+                ? "bg-rose-500/15 text-rose-300 border border-rose-400/30"
+                : "bg-cyan-500/15 text-cyan-300 border border-cyan-400/25"
               : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
           }`}
         >
@@ -432,7 +558,9 @@ export const App: React.FC = () => {
             }}
             className="flex items-center gap-2 min-w-0 flex-1 text-left"
           >
-            {isSelected ? (
+            {isRecycleBin ? (
+              <Trash2 className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+            ) : isSelected ? (
               <FolderOpen className="w-3.5 h-3.5 shrink-0 cyber-accent-text" />
             ) : (
               <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-75" />
@@ -448,18 +576,20 @@ export const App: React.FC = () => {
                 {totalCount}
               </span>
             )}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                openCreateFolderForm(node.id);
-              }}
-              className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-cyan-300 opacity-75 group-hover:opacity-100"
-              title={`Add subfolder inside ${isRoot ? "Vault Root" : node.name}`}
-            >
-              <FolderPlus className="w-3 h-3" />
-            </button>
-            {!isRoot && (
+            {!isRecycleBin && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCreateFolderForm(node.id);
+                }}
+                className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-cyan-300 opacity-75 group-hover:opacity-100"
+                title={`Add subfolder inside ${isRoot ? "Vault Root" : node.name}`}
+              >
+                <FolderPlus className="w-3 h-3" />
+              </button>
+            )}
+            {!isRoot && !isRecycleBin && (
               <>
                 <button
                   type="button"
@@ -786,8 +916,14 @@ export const App: React.FC = () => {
               status={status}
               theme={theme}
               uiStyle={uiStyle}
+              fontScale={fontScale}
+              maskSubtitles={maskSubtitles}
+              bgLockSeconds={bgLockSeconds}
               onThemeChange={setTheme}
               onUiStyleChange={setUiStyle}
+              onFontScaleChange={setFontScale}
+              onMaskSubtitlesChange={handleMaskSubtitlesChange}
+              onBgLockSecondsChange={handleBgLockSecondsChange}
               onStatusUpdated={setStatus}
               onVaultDataChanged={refreshVaultData}
               onCopy={handleCopy}
@@ -849,7 +985,7 @@ export const App: React.FC = () => {
                             {item.title}
                           </div>
                           <div className="text-[11px] font-mono text-slate-400 truncate">
-                            {item.username || "—"}
+                            {maskSubtitles ? "••••••••" : item.username || "—"}
                           </div>
                         </button>
                       </div>
@@ -871,19 +1007,82 @@ export const App: React.FC = () => {
               } w-full lg:w-80 xl:w-96 flex-col border-r app-list-pane shrink-0`}
             >
               <div className="p-3 border-b border-slate-800/80 space-y-2.5">
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Instant local search..."
-                    className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
-                  />
+                <div className="flex items-center gap-1.5">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Instant local search... (Ctrl+K)"
+                      className="w-full rounded-xl bg-[#07090F] border border-slate-700/80 pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !maskSubtitles;
+                      handleMaskSubtitlesChange(next);
+                      showToast(
+                        next
+                          ? "Privacy mask ON — usernames & URLs hidden"
+                          : "Privacy mask OFF"
+                      );
+                    }}
+                    className={`p-2 rounded-xl border shrink-0 transition ${
+                      maskSubtitles
+                        ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-300"
+                        : "bg-[#07090F] border-slate-700/80 text-slate-400 hover:text-cyan-300"
+                    }`}
+                    title={
+                      maskSubtitles
+                        ? "Privacy Mask ON (click to show usernames/URLs)"
+                        : "Privacy Mask OFF (click to hide usernames/URLs)"
+                    }
+                  >
+                    {maskSubtitles ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
                 </div>
 
+                {/* Recycle Bin Banner (when viewing Recycle Bin) */}
+                {isViewingRecycleBin && (
+                  <div className="rounded-xl bg-rose-500/10 border border-rose-500/35 px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                    <div className="flex items-center gap-1.5 text-rose-200 min-w-0">
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span className="truncate font-medium">
+                        Recycle Bin ({entries.length})
+                      </span>
+                    </div>
+                    {entries.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const purged = await vaultApi.emptyRecycleBin();
+                            setSelectedEntry(null);
+                            await refreshVaultData();
+                            showToast(
+                              `Recycle Bin emptied — ${purged} entries permanently zeroized.`
+                            );
+                          } catch (err) {
+                            showToast(String(err));
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-[10px] font-bold text-rose-200 shrink-0"
+                      >
+                        Empty Trash
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Active Folder Breadcrumb Bar (Visible on Mobile & Desktop when inside a folder) */}
-                {activeGroupTrail && activeGroupTrail.length > 1 && (
+                {activeGroupTrail && activeGroupTrail.length > 1 && !isViewingRecycleBin && (
                   <div className="flex items-center justify-between gap-1.5 rounded-xl bg-[#07090F] border border-slate-800 px-2.5 py-1.5 text-[11px]">
                     <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
                       <button
@@ -977,28 +1176,36 @@ export const App: React.FC = () => {
                     <Star className="w-3 h-3" />
                     Favs
                   </button>
-                  {groups?.subgroups.map((sub) => (
-                    <button
-                      key={sub.id}
-                      type="button"
-                      onClick={() => {
-                        setFavoritesOnly(false);
-                        setSelectedGroupId(sub.id);
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 ${
-                        !favoritesOnly && selectedGroupId === sub.id
-                          ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
-                          : "bg-[#07090F] border-slate-800 text-slate-400"
-                      }`}
-                    >
-                      {sub.name}
-                    </button>
-                  ))}
+                  {groups?.subgroups.map((sub) => {
+                    const isBin = Boolean(status.recycle_bin_id && sub.id === status.recycle_bin_id);
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        onClick={() => {
+                          setFavoritesOnly(false);
+                          setSelectedGroupId(sub.id);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 flex items-center gap-1 ${
+                          !favoritesOnly && selectedGroupId === sub.id
+                            ? isBin
+                              ? "bg-rose-500/15 border-rose-400/40 text-rose-200"
+                              : "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
+                            : "bg-[#07090F] border-slate-800 text-slate-400"
+                        }`}
+                      >
+                        {isBin && <Trash2 className="w-3 h-3 text-rose-400" />}
+                        {sub.name}
+                      </button>
+                    );
+                  })}
                   <button
                     type="button"
                     onClick={() => {
                       setShowFolderBrowserMobile(true);
-                      openCreateFolderForm(selectedGroupId ?? groups?.id ?? null);
+                      openCreateFolderForm(
+                        isViewingRecycleBin ? groups?.id ?? null : selectedGroupId ?? groups?.id ?? null
+                      );
                     }}
                     className="px-2 py-1 rounded-lg text-[11px] bg-slate-800 text-cyan-300 border border-slate-700 shrink-0"
                     title="New Folder"
@@ -1066,19 +1273,25 @@ export const App: React.FC = () => {
               <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
                 {entries.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500 space-y-2.5">
-                    <p>No entries in this folder yet.</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedEntry(null);
-                        setCreatingNew(true);
-                        setFocusTotpOnCreate(false);
-                      }}
-                      className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold inline-flex items-center gap-1.5"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Add Entry Here
-                    </button>
+                    <p>
+                      {isViewingRecycleBin
+                        ? "Recycle Bin is empty."
+                        : "No entries in this folder yet."}
+                    </p>
+                    {!isViewingRecycleBin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedEntry(null);
+                          setCreatingNew(true);
+                          setFocusTotpOnCreate(false);
+                        }}
+                        className="px-4 py-2 rounded-xl cyber-btn-primary text-xs font-bold inline-flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add Entry Here
+                      </button>
+                    )}
                   </div>
                 ) : (
                   entries.map((item) => {
@@ -1118,39 +1331,66 @@ export const App: React.FC = () => {
                               )}
                             </div>
                             <div className="text-xs text-slate-400 truncate mt-0.5 font-mono">
-                              {item.username || item.url || "Encrypted record"}
+                              {maskSubtitles
+                                ? "••••••••"
+                                : item.username || item.url || "Encrypted record"}
                             </div>
                           </div>
                         </button>
 
-                        {/* 1-tap Quick Copy buttons */}
+                        {/* 1-tap Quick Actions (Restore in Recycle Bin, Copy in normal folders) */}
                         <div className="flex items-center gap-1 shrink-0">
-                          {item.username && (
-                            <button
-                              type="button"
-                              onClick={() => handleCopy(item.username, "Username")}
-                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition"
-                              title="Quick copy username"
-                            >
-                              <User className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                          {(item.entry_type === "login" || item.entry_type === "dev") && (
+                          {isViewingRecycleBin ? (
                             <button
                               type="button"
                               onClick={async () => {
                                 try {
-                                  const secs = await vaultApi.copyEntryPassword(item.id);
-                                  showToast(`Secret copied — clears in ${secs}s`);
+                                  await vaultApi.restoreEntry(item.id);
+                                  if (selectedEntry?.id === item.id) {
+                                    setSelectedEntry(null);
+                                  }
+                                  await refreshVaultData();
+                                  showToast(`"${item.title || "Entry"}" restored from Recycle Bin.`);
                                 } catch (err) {
                                   showToast(String(err));
                                 }
                               }}
-                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
-                              title="Quick copy password / token (auto-clear)"
+                              className="px-2 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/40 text-emerald-300 text-[10px] font-semibold flex items-center gap-1 transition"
+                              title="Restore entry out of Recycle Bin"
                             >
-                              <Copy className="w-3.5 h-3.5" />
+                              <RotateCcw className="w-3 h-3" />
+                              Restore
                             </button>
+                          ) : (
+                            <>
+                              {item.username && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(item.username, "Username")}
+                                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition"
+                                  title="Quick copy username"
+                                >
+                                  <User className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {(item.entry_type === "login" || item.entry_type === "dev") && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      const secs = await vaultApi.copyEntryPassword(item.id);
+                                      showToast(`Secret copied — clears in ${secs}s`);
+                                    } catch (err) {
+                                      showToast(String(err));
+                                    }
+                                  }}
+                                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/30 text-slate-400 hover:text-cyan-300 transition"
+                                  title="Quick copy password / token (auto-clear)"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -1179,12 +1419,16 @@ export const App: React.FC = () => {
                     refreshVaultData();
                     showToast("Entry encrypted & saved atomically.");
                   }}
-                  onDeleted={() => {
+                  onDeleted={(permanentlyDeleted) => {
                     setSelectedEntry(null);
                     setCreatingNew(false);
                     setFocusTotpOnCreate(false);
                     refreshVaultData();
-                    showToast("Entry deleted & zeroized.");
+                    showToast(
+                      permanentlyDeleted
+                        ? "Entry permanently deleted & zeroized."
+                        : "Entry moved to Recycle Bin (restorable)."
+                    );
                   }}
                   onCopy={handleCopy}
                   onBackMobile={() => {

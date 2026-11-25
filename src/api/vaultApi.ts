@@ -5,6 +5,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import type {
   ChangeCredentialsResult,
   CipherAlgorithm,
+  CreateVaultFromImportResult,
   EntryDetail,
   EntrySummary,
   EntryUpsertRequest,
@@ -27,6 +28,9 @@ import type {
 } from "../types";
 
 const HIDE_RECENT_KEY = "cipherpass_hide_recent_vaults_v1";
+const SCREEN_PROTECT_KEY = "cipherpass_screen_protect_v1";
+const MASK_SUBTITLES_KEY = "cipherpass_mask_subtitles_v1";
+const BG_LOCK_SECS_KEY = "cipherpass_bg_lock_secs_v1";
 
 export function loadHideRecentVaults(): boolean {
   try {
@@ -44,10 +48,78 @@ export function saveHideRecentVaults(hide: boolean): void {
   }
 }
 
+export function loadScreenProtection(): boolean {
+  try {
+    const val = localStorage.getItem(SCREEN_PROTECT_KEY);
+    return val === null ? true : val === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function applyScreenProtection(enabled: boolean): void {
+  try {
+    localStorage.setItem(SCREEN_PROTECT_KEY, enabled ? "true" : "false");
+  } catch {
+    // ignore
+  }
+  try {
+    window.CipherPassAndroid?.setScreenProtection?.(enabled);
+  } catch {
+    // ignore on non-Android
+  }
+}
+
+export function loadMaskEntrySubtitles(): boolean {
+  try {
+    return localStorage.getItem(MASK_SUBTITLES_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveMaskEntrySubtitles(masked: boolean): void {
+  try {
+    localStorage.setItem(MASK_SUBTITLES_KEY, masked ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
+
+export function loadBackgroundLockSeconds(): number {
+  try {
+    const raw = localStorage.getItem(BG_LOCK_SECS_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function saveBackgroundLockSeconds(secs: number): void {
+  try {
+    localStorage.setItem(BG_LOCK_SECS_KEY, String(Math.max(0, secs)));
+  } catch {
+    // ignore
+  }
+}
+
+export function onAndroidAppBackgrounded(cb: (ts: number) => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (ev: Event) => {
+    const custom = ev as CustomEvent<{ ts?: number }>;
+    cb(custom.detail?.ts ?? Date.now());
+  };
+  window.addEventListener("cipherpass-app-backgrounded", handler);
+  return () => window.removeEventListener("cipherpass-app-backgrounded", handler);
+}
+
 interface CipherPassAndroidBridge {
   hasAllFilesAccess?: () => boolean;
   requestAllFilesAccess?: () => boolean;
   pickNativeFolder?: (defaultFileName: string) => boolean;
+  setScreenProtection?: (enabled: boolean) => boolean;
+  setSystemBarsAppearance?: (isLight: boolean, bgColorHex: string) => boolean;
 }
 
 declare global {
@@ -280,6 +352,30 @@ export async function pickOpenCsvFile(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+export async function pickOpenPqKeyFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await openDialog({
+    multiple: false,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "ML-KEM-1024 Key File", extensions: ["pqkey", "pqpub", "txt"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickSavePqKeyFile(
+  defaultName = "CipherPass_MLKEM1024_SECRET.pqkey"
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const selected = await saveDialog({
+    defaultPath: defaultName,
+    ...(isMobilePlatform()
+      ? {}
+      : { filters: [{ name: "ML-KEM-1024 Key File", extensions: ["pqkey", "pqpub", "txt"] }] }),
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
 export const vaultApi = {
   getDefaultVaultDir: () => invoke<string>("get_default_vault_dir"),
   getStorageRoots: () => invoke<StorageRoot[]>("get_storage_roots"),
@@ -312,6 +408,21 @@ export const vaultApi = {
     parallelism: number;
   }) => invoke<VaultStatus>("create_vault", { req }),
 
+  createVaultFromImport: (req: {
+    path: string;
+    database_name: string;
+    master_password: string | null;
+    keyfile_path: string | null;
+    cipher: CipherAlgorithm;
+    kdf_algorithm: KdfAlgorithm;
+    memory_mib: number;
+    iterations: number;
+    parallelism: number;
+    import_kind: "bitwarden_json" | "csv";
+    import_source_path: string;
+    import_password: string | null;
+  }) => invoke<CreateVaultFromImportResult>("create_vault_from_import", { req }),
+
   openVault: (req: {
     path: string;
     master_password: string | null;
@@ -323,6 +434,11 @@ export const vaultApi = {
 
   generateKeyfileToPath: (path: string) =>
     invoke<string>("generate_keyfile_to_path", { path }),
+
+  writeTextFile: (path: string, content: string) =>
+    invoke<string>("write_text_file", { path, content }),
+
+  readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
 
   listGroups: () => invoke<GroupNode>("list_groups"),
 
@@ -382,7 +498,15 @@ export const vaultApi = {
   upsertEntry: (req: EntryUpsertRequest) =>
     invoke<EntryDetail>("upsert_entry", { req }),
 
-  deleteEntry: (entryId: string) => invoke<void>("delete_entry", { entryId }),
+  deleteEntry: (entryId: string) => invoke<boolean>("delete_entry", { entryId }),
+
+  restoreEntry: (entryId: string, targetGroupId?: string | null) =>
+    invoke<EntryDetail>("restore_entry", {
+      entryId,
+      targetGroupId: targetGroupId ?? null,
+    }),
+
+  emptyRecycleBin: () => invoke<number>("empty_recycle_bin"),
 
   toggleFavorite: (entryId: string) =>
     invoke<EntryDetail>("toggle_favorite", { entryId }),

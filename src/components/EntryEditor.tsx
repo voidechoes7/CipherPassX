@@ -37,7 +37,7 @@ interface Props {
   groups: GroupNode;
   initialFocusTotp?: boolean;
   onSaved: (saved: EntryDetail) => void;
-  onDeleted: () => void;
+  onDeleted: (permanentlyDeleted: boolean) => void;
   onCopy: (secret: string, label: string) => void;
   onBackMobile?: () => void;
 }
@@ -427,8 +427,8 @@ export const EntryEditor: React.FC<Props> = ({
   const handleDelete = async () => {
     if (!entry) return;
     try {
-      await vaultApi.deleteEntry(entry.id);
-      onDeleted();
+      const permanentlyDeleted = await vaultApi.deleteEntry(entry.id);
+      onDeleted(permanentlyDeleted);
     } catch (err) {
       setError(String(err));
     }

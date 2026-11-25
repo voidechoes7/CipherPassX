@@ -3,16 +3,20 @@ package com.voidechoes7.cipherpass
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -46,7 +50,7 @@ class MainActivity : TauriActivity() {
         return@registerForActivityResult
       }
 
-      // 2. Otherwise, create the target .kdbx document inside the SAF tree URI so tauri-plugin-fs
+      // 2. Otherwise, create the target file inside the SAF tree URI so tauri-plugin-fs
       //    can write and read it via content:// even without MANAGE_EXTERNAL_STORAGE.
       val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
       val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
@@ -66,10 +70,26 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    // Enable FLAG_SECURE by default to protect vaults from screenshots, screen recording, and recent-apps previews.
+    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+  }
+
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     appWebView = webView
     webView.addJavascriptInterface(AndroidStorageBridge(), "CipherPassAndroid")
+  }
+
+  override fun onPause() {
+    super.onPause()
+    appWebView?.post {
+      appWebView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('cipherpass-app-backgrounded', { detail: { ts: ${System.currentTimeMillis()} } }));",
+        null
+      )
+    }
   }
 
   override fun onResume() {
@@ -96,8 +116,7 @@ class MainActivity : TauriActivity() {
 
   private fun sanitizeFileName(raw: String): String {
     val trimmed = raw.trim().replace("/", "_").replace("\\", "_")
-    val base = if (trimmed.isEmpty()) "CipherPass_Vault.kdbx" else trimmed
-    return if (base.endsWith(".kdbx", ignoreCase = true)) base else "$base.kdbx"
+    return if (trimmed.isEmpty()) "CipherPass_Vault.kdbx" else trimmed
   }
 
   private fun tryResolvePrimaryStoragePath(treeUri: Uri): String? {
@@ -167,6 +186,45 @@ class MainActivity : TauriActivity() {
         pendingFileName = defaultFileName
         runOnUiThread {
           openDocumentTreeLauncher.launch(null)
+        }
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    @JavascriptInterface
+    fun setScreenProtection(enabled: Boolean): Boolean {
+      return try {
+        runOnUiThread {
+          if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+          } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+          }
+        }
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+
+    @JavascriptInterface
+    fun setSystemBarsAppearance(isLight: Boolean, bgColorHex: String): Boolean {
+      return try {
+        runOnUiThread {
+          try {
+            val parsedColor = Color.parseColor(bgColorHex)
+            @Suppress("DEPRECATION")
+            window.statusBarColor = parsedColor
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = parsedColor
+          } catch (_: Exception) {
+            // Keep existing bar colors if hex parsing fails
+          }
+          val controller = WindowCompat.getInsetsController(window, window.decorView)
+          controller.isAppearanceLightStatusBars = isLight
+          controller.isAppearanceLightNavigationBars = isLight
         }
         true
       } catch (_: Exception) {
