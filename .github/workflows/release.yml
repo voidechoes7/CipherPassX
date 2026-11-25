@@ -280,7 +280,23 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
             TAG="v${APP_VER}"
           fi
-          gh release delete "$TAG" --yes --cleanup-tag || true
-          gh release create "$TAG" dist-release/* \
-            --title "CipherPass $TAG" \
-            --notes "CipherPass $TAG — Comprehensive Cryptographic & Security Audit Hardening Release: (1) Restricted IPC file commands (read_text_file/write_text_file) strictly to validated NIST FIPS 203 ML-KEM-1024 keys (.pqpub/.pqkey/.txt <=16 KiB) with traversal, symlink & .keystore/ isolation; (2) Upgraded Android Biometric Unlock to hardware-backed AndroidKeyStore BiometricPrompt.CryptoObject (BIOMETRIC_STRONG Class 3) + CPBIO002 length-prefixed AAD slot format (eliminating plaintext device.key on Android); (3) Hardened KDBX 4 / XML / Keyfile v2 / Bitwarden JSON parsers against Argon2/PBKDF2 DoS/OOM, 32-bit TLV overflows, trailing unauthenticated bytes, XXE/DOCTYPE, deep recursion & mandatory Keyfile v2 Hash verification; (4) Eliminated bulk TOTP seed exposure from list_entries via Rust-side get_entry_totp_code, enabled zeroize features across all crypto crates, and redacted Debug/ZeroizeOnDrop across secret DTOs & ML-KEM-1024 keypairs; (5) Minimized Tauri capabilities (removed unused fs/clipboard-read), hardened CSP, Android MainActivity.kt @JavascriptInterface origin/path checks & usesCleartextTraffic=false, serialized concurrent unlocks, added session-ID checks on async ops, persistent Condvar clipboard worker, default 60s active background lock & masked PQ secret key UI. Signed with persistent RSA-4096 keystore (versionCode 701) for seamless in-place updates."
+          NOTES="CipherPass $TAG — UX & Organization Release (includes all v0.7.1 security audit hardening): (1) New 'App Storage' vault picker on the unlock screen — vaults saved in App Private Storage (e.g. imported from Bitwarden) are always reachable even when 'Hide recent vaults' is enabled (you can also type just the filename, e.g. MyVault.kdbx); (2) Dedicated Bitwarden-style Folders & Subfolders menu — clean All / Favorites / Folders bar on mobile, with a separate sheet offering folder search, collapsible subfolders, quick views (All Items, Favorites, Recycle Bin) and full folder management (+ New Folder, + Subfolder, rename, delete); (3) Collapsible subfolder tree on desktop sidebar; (4) Release pipeline hardened with automatic retries for transient GitHub upload errors. Signed with persistent RSA-4096 keystore (versionCode 702) for seamless in-place updates over v0.7.1."
+          ok=0
+          for attempt in 1 2 3 4; do
+            echo "::group::Publish attempt $attempt"
+            gh release delete "$TAG" --yes || true
+            if gh release create "$TAG" dist-release/* \
+                --title "CipherPass $TAG" \
+                --notes "$NOTES"; then
+              ok=1
+              echo "::endgroup::"
+              break
+            fi
+            echo "::endgroup::"
+            echo "Publish attempt $attempt failed — retrying in $((attempt * 20))s..."
+            sleep $((attempt * 20))
+          done
+          if [[ "$ok" != "1" ]]; then
+            echo "::error::Failed to publish GitHub Release after 4 attempts"
+            exit 1
+          fi

@@ -166,14 +166,20 @@ export const App: React.FC = () => {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Folder management state (create root/subfolder, rename, delete, mobile tree drawer)
+  // Folder management state (create root/subfolder, rename, delete, dedicated folders menu)
   const [showFolderBrowserMobile, setShowFolderBrowserMobile] = useState(false);
+  const [folderSearchQuery, setFolderSearchQuery] = useState("");
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Record<string, boolean>>({});
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupParentId, setNewGroupParentId] = useState<string | null>(null);
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [renameGroupText, setRenameGroupText] = useState("");
   const [confirmDeleteGroupId, setConfirmDeleteGroupId] = useState<string | null>(null);
+
+  const toggleGroupCollapsed = (groupId: string) => {
+    setCollapsedGroupIds((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
 
   // Liquid Glass interactive sliding bottom dock state
   const dockRef = useRef<HTMLDivElement | null>(null);
@@ -225,6 +231,8 @@ export const App: React.FC = () => {
       setSearchQuery("");
       setEntries([]);
       setGroups(null);
+      setShowFolderBrowserMobile(false);
+      setFolderSearchQuery("");
     }
   }, []);
 
@@ -266,6 +274,8 @@ export const App: React.FC = () => {
       setSearchQuery("");
       setEntries([]);
       setGroups(null);
+      setShowFolderBrowserMobile(false);
+      setFolderSearchQuery("");
       showToast("Vault auto-locked & secrets zeroized in memory.");
     }).then((fn) => (unlistenLock = fn));
 
@@ -551,9 +561,46 @@ export const App: React.FC = () => {
   const sliderTransformPercent =
     dockDragPercent !== null ? dockDragPercent : activeTabIdx * 100;
 
-  const renderGroupTree = (node: GroupNode, depth = 0, onSelectExtra?: () => void) => {
+  const groupMatchesFilter = (node: GroupNode, q: string): boolean => {
+    if (!q) return true;
+    if (node.name.toLowerCase().includes(q)) return true;
+    return node.subgroups.some((sub) => groupMatchesFilter(sub, q));
+  };
+
+  const renderGroupTree = (
+    node: GroupNode,
+    depth = 0,
+    onSelectExtra?: () => void,
+    options?: { filterQuery?: string; omitRecycleBin?: boolean; hideRootRow?: boolean }
+  ) => {
     const isRoot = depth === 0;
     const isRecycleBin = Boolean(status.recycle_bin_id && node.id === status.recycle_bin_id);
+    if (options?.omitRecycleBin && isRecycleBin) {
+      return null;
+    }
+
+    const q = (options?.filterQuery ?? "").trim().toLowerCase();
+    if (!isRoot && q && !groupMatchesFilter(node, q)) {
+      return null;
+    }
+
+    const visibleSubgroups = node.subgroups.filter((sub) => {
+      if (options?.omitRecycleBin && status.recycle_bin_id && sub.id === status.recycle_bin_id) {
+        return false;
+      }
+      return !q || groupMatchesFilter(sub, q);
+    });
+
+    if (isRoot && options?.hideRootRow) {
+      return (
+        <div key={node.id} className="space-y-1">
+          {visibleSubgroups.map((sub) => renderGroupTree(sub, 1, onSelectExtra, options))}
+        </div>
+      );
+    }
+
+    const hasChildren = visibleSubgroups.length > 0;
+    const isCollapsed = !q && !isRoot && Boolean(collapsedGroupIds[node.id]);
     const isSelected =
       activeTab === "vault" &&
       !favoritesOnly &&
@@ -561,45 +608,68 @@ export const App: React.FC = () => {
     const totalCount = isRoot
       ? status.entry_count
       : countGroupRecursive(node);
+    const visualDepth = options?.hideRootRow ? Math.max(0, depth - 1) : depth;
 
     return (
       <div key={node.id} className="space-y-0.5">
         <div
-          style={{ paddingLeft: `${8 + depth * 12}px` }}
-          className={`group flex items-center justify-between gap-1 pr-1.5 py-1.5 rounded-lg text-xs transition ${
+          style={{ paddingLeft: `${8 + visualDepth * 14}px` }}
+          className={`group flex items-center justify-between gap-1 pr-1.5 py-2 rounded-xl text-xs transition ${
             isSelected
               ? isRecycleBin
                 ? "bg-rose-500/15 text-rose-300 border border-rose-400/30"
                 : "bg-cyan-500/15 text-cyan-300 border border-cyan-400/25"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              : "text-slate-300 hover:text-white hover:bg-slate-800/60"
           }`}
         >
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("vault");
-              setFavoritesOnly(false);
-              setSelectedGroupId(isRoot ? null : node.id);
-              setConfirmDeleteGroupId(null);
-              onSelectExtra?.();
-            }}
-            className="flex items-center gap-2 min-w-0 flex-1 text-left"
-          >
-            {isRecycleBin ? (
-              <Trash2 className="w-3.5 h-3.5 shrink-0 text-rose-400" />
-            ) : isSelected ? (
-              <FolderOpen className="w-3.5 h-3.5 shrink-0 cyber-accent-text" />
-            ) : (
-              <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-75" />
-            )}
-            <span className="truncate font-medium">
-              {isRoot ? "All Entries" : node.name}
-            </span>
-          </button>
+          <div className="flex items-center gap-1 min-w-0 flex-1">
+            {!isRoot && hasChildren ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleGroupCollapsed(node.id);
+                }}
+                className="p-0.5 rounded hover:bg-slate-700/70 text-slate-400 hover:text-cyan-300 shrink-0"
+                aria-label={isCollapsed ? "Expand subfolders" : "Collapse subfolders"}
+              >
+                {isCollapsed ? (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
+            ) : !isRoot ? (
+              <span className="w-4 shrink-0" />
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("vault");
+                setFavoritesOnly(false);
+                setSelectedGroupId(isRoot ? null : node.id);
+                setConfirmDeleteGroupId(null);
+                onSelectExtra?.();
+              }}
+              className="flex items-center gap-2 min-w-0 flex-1 text-left"
+            >
+              {isRecycleBin ? (
+                <Trash2 className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+              ) : isSelected ? (
+                <FolderOpen className="w-3.5 h-3.5 shrink-0 cyber-accent-text" />
+              ) : (
+                <Folder className="w-3.5 h-3.5 shrink-0 cyber-accent-text opacity-75" />
+              )}
+              <span className="truncate font-medium">
+                {isRoot ? "All Entries" : node.name}
+              </span>
+            </button>
+          </div>
 
           <div className="flex items-center gap-1 shrink-0">
             {totalCount > 0 && (
-              <span className="text-[10px] font-mono text-slate-500 px-1">
+              <span className="text-[10px] font-mono text-slate-400 bg-slate-800/80 px-1.5 py-0.5 rounded-md">
                 {totalCount}
               </span>
             )}
@@ -613,7 +683,7 @@ export const App: React.FC = () => {
                 className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-cyan-300 opacity-75 group-hover:opacity-100"
                 title={`Add subfolder inside ${isRoot ? "Vault Root" : node.name}`}
               >
-                <FolderPlus className="w-3 h-3" />
+                <FolderPlus className="w-3.5 h-3.5" />
               </button>
             )}
             {!isRoot && !isRecycleBin && (
@@ -630,7 +700,7 @@ export const App: React.FC = () => {
                   className="p-1 rounded hover:bg-slate-700/70 text-slate-400 hover:text-amber-300 opacity-75 group-hover:opacity-100"
                   title="Rename folder"
                 >
-                  <Pencil className="w-3 h-3" />
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
                 {confirmDeleteGroupId === node.id ? (
                   <button
@@ -654,7 +724,7 @@ export const App: React.FC = () => {
                     className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 opacity-75 group-hover:opacity-100"
                     title="Delete folder"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
               </>
@@ -665,7 +735,7 @@ export const App: React.FC = () => {
         {renamingGroupId === node.id && (
           <form
             onSubmit={handleRenameGroup}
-            style={{ paddingLeft: `${12 + depth * 12}px` }}
+            style={{ paddingLeft: `${12 + visualDepth * 14}px` }}
             className="flex gap-1 pr-1.5 py-1"
           >
             <input
@@ -691,7 +761,8 @@ export const App: React.FC = () => {
           </form>
         )}
 
-        {node.subgroups.map((sub) => renderGroupTree(sub, depth + 1, onSelectExtra))}
+        {!isCollapsed &&
+          visibleSubgroups.map((sub) => renderGroupTree(sub, depth + 1, onSelectExtra, options))}
       </div>
     );
   };
@@ -1155,38 +1226,25 @@ export const App: React.FC = () => {
                   </div>
                 )}
 
-                {/* Mobile Folder Browser Toggle + Quick Pills */}
-                <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowFolderBrowserMobile(!showFolderBrowserMobile)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap border shrink-0 flex items-center gap-1 ${
-                      showFolderBrowserMobile
-                        ? "cyber-btn-primary border-transparent"
-                        : "bg-slate-800 border-slate-700 text-cyan-200"
-                    }`}
-                  >
-                    <FolderOpen className="w-3.5 h-3.5" />
-                    Folders
-                    <ChevronDown
-                      className={`w-3 h-3 transition ${
-                        showFolderBrowserMobile ? "rotate-180" : ""
-                      }`}
-                    />
-                  </button>
+                {/* Clean Bitwarden-style Mobile Filter Bar: All | Favorites | Folders Menu */}
+                <div className="grid grid-cols-3 gap-1.5 md:hidden">
                   <button
                     type="button"
                     onClick={() => {
                       setFavoritesOnly(false);
                       setSelectedGroupId(null);
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 ${
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-1.5 ${
                       !favoritesOnly && !selectedGroupId
-                        ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
-                        : "bg-[#07090F] border-slate-800 text-slate-400"
+                        ? "bg-cyan-500/15 border-cyan-400/45 text-cyan-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    All
+                    <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">All</span>
+                    <span className="text-[10px] font-mono opacity-75">
+                      {status.entry_count}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -1194,107 +1252,40 @@ export const App: React.FC = () => {
                       setFavoritesOnly(true);
                       setSelectedGroupId(null);
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 flex items-center gap-1 ${
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-1.5 ${
                       favoritesOnly
-                        ? "bg-amber-500/15 border-amber-400/40 text-amber-200"
-                        : "bg-[#07090F] border-slate-800 text-slate-400"
+                        ? "bg-amber-500/15 border-amber-400/45 text-amber-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    <Star className="w-3 h-3" />
-                    Favs
+                    <Star className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Favorites</span>
                   </button>
-                  {groups?.subgroups.map((sub) => {
-                    const isBin = Boolean(status.recycle_bin_id && sub.id === status.recycle_bin_id);
-                    return (
-                      <button
-                        key={sub.id}
-                        type="button"
-                        onClick={() => {
-                          setFavoritesOnly(false);
-                          setSelectedGroupId(sub.id);
-                        }}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap border shrink-0 flex items-center gap-1 ${
-                          !favoritesOnly && selectedGroupId === sub.id
-                            ? isBin
-                              ? "bg-rose-500/15 border-rose-400/40 text-rose-200"
-                              : "bg-cyan-500/15 border-cyan-400/40 text-cyan-200"
-                            : "bg-[#07090F] border-slate-800 text-slate-400"
-                        }`}
-                      >
-                        {isBin && <Trash2 className="w-3 h-3 text-rose-400" />}
-                        {sub.name}
-                      </button>
-                    );
-                  })}
                   <button
                     type="button"
                     onClick={() => {
+                      setFolderSearchQuery("");
                       setShowFolderBrowserMobile(true);
-                      openCreateFolderForm(
-                        isViewingRecycleBin ? groups?.id ?? null : selectedGroupId ?? groups?.id ?? null
-                      );
                     }}
-                    className="px-2 py-1 rounded-lg text-[11px] bg-slate-800 text-cyan-300 border border-slate-700 shrink-0"
-                    title="New Folder"
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-1.5 ${
+                      selectedGroupId && !favoritesOnly
+                        ? isViewingRecycleBin
+                          ? "bg-rose-500/15 border-rose-400/45 text-rose-200"
+                          : "bg-cyan-500/15 border-cyan-400/45 text-cyan-200"
+                        : "bg-[#07090F] border-slate-800 text-slate-300 hover:text-white"
+                    }`}
                   >
-                    + Folder
+                    {isViewingRecycleBin ? (
+                      <Trash2 className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+                    ) : (
+                      <FolderOpen className="w-3.5 h-3.5 shrink-0 cyber-accent-text" />
+                    )}
+                    <span className="truncate">
+                      {activeFolderNode ? activeFolderNode.name : "Folders"}
+                    </span>
+                    <ChevronRight className="w-3 h-3 shrink-0 opacity-70" />
                   </button>
                 </div>
-
-                {/* Mobile Collapsible Full Folder Tree Browser (Create, Subfolder, Rename, Delete) */}
-                {showFolderBrowserMobile && groups && (
-                  <div className="md:hidden rounded-xl bg-[#07090F] border border-slate-800 p-2.5 space-y-2 max-h-64 overflow-y-auto deck-animate">
-                    <div className="flex items-center justify-between px-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                        Browse &amp; Manage Vault Folders
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => openCreateFolderForm(groups.id)}
-                        className="text-[10px] font-semibold cyber-accent-text flex items-center gap-1"
-                      >
-                        <FolderPlus className="w-3 h-3" />
-                        + Root Folder
-                      </button>
-                    </div>
-
-                    {showNewGroupInput && (
-                      <form onSubmit={handleCreateGroup} className="space-y-1.5">
-                        <div className="text-[10px] text-slate-400 px-1">
-                          New folder inside:{" "}
-                          <span className="cyber-accent-text font-medium">{parentFolderLabel}</span>
-                        </div>
-                        <div className="flex gap-1.5">
-                          <input
-                            type="text"
-                            value={newGroupName}
-                            onChange={(e) => setNewGroupName(e.target.value)}
-                            placeholder="Folder name..."
-                            autoFocus
-                            className="flex-1 min-w-0 rounded-lg bg-[#0D111A] border border-slate-700 px-2.5 py-1.5 text-xs text-white"
-                          />
-                          <button
-                            type="submit"
-                            className="px-3 py-1.5 rounded-lg cyber-btn-primary text-xs font-bold"
-                          >
-                            Add
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShowNewGroupInput(false)}
-                            className="p-1.5 rounded-lg bg-slate-800 text-slate-400"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </form>
-                    )}
-
-                    <div className="space-y-0.5">
-                      {renderGroupTree(groups, 0, () => setShowFolderBrowserMobile(false))}
-                    </div>
-                  </div>
-                )}
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
@@ -1525,6 +1516,220 @@ export const App: React.FC = () => {
           })}
         </div>
       </nav>
+
+      {/* Dedicated Bitwarden-style Folders & Subfolders Menu (bottom sheet on mobile) */}
+      {showFolderBrowserMobile && groups && (() => {
+        const recycleNode = status.recycle_bin_id
+          ? groups.subgroups.find((g) => g.id === status.recycle_bin_id) ?? null
+          : null;
+        const recycleCount = recycleNode ? countGroupRecursive(recycleNode) : 0;
+        const fq = folderSearchQuery.trim().toLowerCase();
+        const anyFolderMatches = groups.subgroups.some(
+          (g) => g.id !== status.recycle_bin_id && groupMatchesFilter(g, fq)
+        );
+        const closeSheet = () => {
+          setShowFolderBrowserMobile(false);
+          setFolderSearchQuery("");
+          setShowNewGroupInput(false);
+          setRenamingGroupId(null);
+          setConfirmDeleteGroupId(null);
+        };
+        const quickRowClass = (active: boolean, tone: "cyan" | "amber" | "rose") =>
+          `w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition ${
+            active
+              ? tone === "amber"
+                ? "bg-amber-500/15 border-amber-400/45 text-amber-200"
+                : tone === "rose"
+                ? "bg-rose-500/15 border-rose-400/45 text-rose-200"
+                : "bg-cyan-500/15 border-cyan-400/45 text-cyan-200"
+              : "bg-[#07090F] border-slate-800 text-slate-300 hover:text-white"
+          }`;
+
+        return (
+          <div
+            className="fixed inset-0 z-40 flex items-end md:items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={closeSheet}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Folders and subfolders"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full md:max-w-md max-h-[85vh] flex flex-col rounded-t-2xl md:rounded-2xl bg-[#0D111A] border border-slate-800 shadow-2xl safe-bottom deck-animate"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 border-b border-slate-800/80 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FolderOpen className="w-4 h-4 cyber-accent-text shrink-0" />
+                  <h2 className="text-sm font-bold text-white truncate">Folders &amp; Subfolders</h2>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openCreateFolderForm(groups.id)}
+                    className="px-2.5 py-1.5 rounded-lg cyber-btn-primary text-[11px] font-bold flex items-center gap-1"
+                    title="Create new top-level folder"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" />
+                    New Folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeSheet}
+                    className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
+                    aria-label="Close folders menu"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+                {/* Folder search */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={folderSearchQuery}
+                    onChange={(e) => setFolderSearchQuery(e.target.value)}
+                    placeholder="Search folders..."
+                    className="w-full rounded-xl bg-[#07090F] border border-slate-800 focus:border-cyan-400/50 pl-8 pr-8 py-2 text-xs text-white outline-none"
+                  />
+                  {folderSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setFolderSearchQuery("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-500 hover:text-white"
+                      aria-label="Clear folder search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick views */}
+                {!fq && (
+                  <div className="space-y-1.5">
+                    <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Views
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("vault");
+                        setFavoritesOnly(false);
+                        setSelectedGroupId(null);
+                        closeSheet();
+                      }}
+                      className={quickRowClass(!favoritesOnly && !selectedGroupId, "cyan")}
+                    >
+                      <span className="flex items-center gap-2">
+                        <KeyRound className="w-3.5 h-3.5" />
+                        All Items
+                      </span>
+                      <span className="text-[10px] font-mono opacity-75">{status.entry_count}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("vault");
+                        setFavoritesOnly(true);
+                        setSelectedGroupId(null);
+                        closeSheet();
+                      }}
+                      className={quickRowClass(favoritesOnly, "amber")}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Star className="w-3.5 h-3.5" />
+                        Favorites
+                      </span>
+                    </button>
+                    {recycleNode && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("vault");
+                          setFavoritesOnly(false);
+                          setSelectedGroupId(recycleNode.id);
+                          closeSheet();
+                        }}
+                        className={quickRowClass(isViewingRecycleBin && !favoritesOnly, "rose")}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Recycle Bin
+                        </span>
+                        <span className="text-[10px] font-mono opacity-75">{recycleCount}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Create folder / subfolder form */}
+                {showNewGroupInput && (
+                  <form
+                    onSubmit={async (e) => {
+                      await handleCreateGroup(e);
+                    }}
+                    className="space-y-1.5 rounded-xl border border-cyan-400/30 bg-cyan-500/5 p-2.5"
+                  >
+                    <div className="text-[11px] text-slate-400 truncate">
+                      New folder inside: <span className="cyber-accent-text font-semibold">{parentFolderLabel}</span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newGroupName}
+                        onChange={(e) => setNewGroupName(e.target.value)}
+                        placeholder="Folder name..."
+                        autoFocus
+                        className="flex-1 min-w-0 rounded-lg bg-[#07090F] border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 rounded-lg cyber-btn-primary text-xs font-bold"
+                      >
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowNewGroupInput(false)}
+                        className="p-1.5 rounded-lg bg-slate-800 text-slate-400"
+                        aria-label="Cancel new folder"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Folder tree */}
+                <div className="space-y-1.5">
+                  <div className="px-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    <span>Folders</span>
+                    <span className="normal-case tracking-normal font-normal text-slate-600">
+                      Tap ▸ to expand · <FolderPlus className="inline w-3 h-3" /> adds subfolder
+                    </span>
+                  </div>
+                  {anyFolderMatches ? (
+                    renderGroupTree(groups, 0, closeSheet, {
+                      filterQuery: folderSearchQuery,
+                      omitRecycleBin: true,
+                      hideRootRow: true,
+                    })
+                  ) : (
+                    <div className="px-3 py-6 text-center text-xs text-slate-500">
+                      {fq
+                        ? `No folders match "${folderSearchQuery.trim()}".`
+                        : "No folders yet. Tap \"New Folder\" to create one."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Toast Notification */}
       {toast && (

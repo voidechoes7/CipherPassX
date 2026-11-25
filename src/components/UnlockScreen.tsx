@@ -18,6 +18,7 @@ import {
   Upload,
   Wand2,
   WifiOff,
+  X,
 } from "lucide-react";
 import {
   checkBiometricAvailable,
@@ -100,13 +101,31 @@ export const UnlockScreen: React.FC<Props> = ({
     null | "vault-dest" | "unseal-dest"
   >(null);
   const [hideRecents, setHideRecents] = useState<boolean>(() => loadHideRecentVaults());
+  const [showAppVaultsModal, setShowAppVaultsModal] = useState(false);
+
+  const appPrivateVaults = localVaults.filter(
+    (v) => defaultDir && v.path.startsWith(defaultDir)
+  );
+
+  const openAppStoragePicker = async () => {
+    setError(null);
+    if (isTauriRuntime()) {
+      try {
+        const refreshed = await vaultApi.listLocalVaults();
+        setLocalVaults(refreshed);
+      } catch {
+        // keep cached list
+      }
+    }
+    setShowAppVaultsModal(true);
+  };
 
   const handleHideRecentsNow = () => {
     setHideRecents(true);
     saveHideRecentVaults(true);
     setVaultPath("");
     setInfo(
-      "Recent vaults hidden. To show them again, unlock any vault and re-enable in Settings → Vault & Key."
+      "Recent vaults hidden. Open vaults anytime via App Storage, Browse, or by typing the filename (e.g. MyVault.kdbx)."
     );
   };
 
@@ -673,16 +692,31 @@ export const UnlockScreen: React.FC<Props> = ({
                 </span>
               )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap sm:flex-nowrap">
               <input
                 type="text"
                 value={vaultPath}
                 onChange={(e) => setVaultPath(e.target.value)}
                 placeholder={
-                  mode === "open" ? "/path/to/vault.kdbx" : "CipherPass_Vault.kdbx"
+                  mode === "open"
+                    ? hideRecents
+                      ? "Vault filename (e.g. MyVault.kdbx) or path..."
+                      : "/path/to/vault.kdbx"
+                    : "CipherPass_Vault.kdbx"
                 }
-                className="flex-1 min-w-0 rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2.5 text-xs sm:text-sm font-mono text-slate-100 focus:outline-none focus:border-cyan-400"
+                className="flex-1 min-w-[180px] rounded-xl bg-[#07090F] border border-slate-700/80 px-3 py-2.5 text-xs sm:text-sm font-mono text-slate-100 focus:outline-none focus:border-cyan-400"
               />
+              {mode === "open" && (
+                <button
+                  type="button"
+                  onClick={openAppStoragePicker}
+                  className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 shrink-0 transition"
+                  title="Pick a vault saved inside App Private Storage"
+                >
+                  <Database className="w-4 h-4 text-emerald-400" />
+                  App Storage
+                </button>
+              )}
               {(mode === "create" || mode === "import") && !isMobilePlatform() && (
                 <button
                   type="button"
@@ -703,6 +737,15 @@ export const UnlockScreen: React.FC<Props> = ({
                 {mode !== "open" && isMobilePlatform() ? "Choose Folder" : "Browse"}
               </button>
             </div>
+            {mode === "open" && hideRecents && (
+              <p className="text-[10px] text-slate-400 mt-1.5 leading-snug">
+                Recent vaults are hidden. Tap{" "}
+                <span className="text-emerald-300 font-medium">App Storage</span> to pick a private
+                vault, tap <span className="text-cyan-300 font-medium">Browse</span> for external
+                folders, or type just the filename (e.g.{" "}
+                <code className="text-slate-300">MyVault.kdbx</code>).
+              </p>
+            )}
             {mode !== "open" && isMobilePlatform() && (
               <p className="text-[10px] text-slate-400 mt-1 leading-snug">
                 Default saves inside app storage. Tap{" "}
@@ -1068,6 +1111,79 @@ export const UnlockScreen: React.FC<Props> = ({
         }}
         onClose={() => setFolderModalTarget(null)}
       />
+
+      {/* App Private Storage Vault Picker Modal */}
+      {showAppVaultsModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setShowAppVaultsModal(false)}
+        >
+          <div
+            className="w-full sm:max-w-md cyber-panel rounded-t-2xl sm:rounded-2xl p-4 sm:p-5 space-y-3.5 max-h-[80vh] flex flex-col border-slate-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Database className="w-4 h-4 text-emerald-400 shrink-0" />
+                <h3 className="text-sm font-bold text-white truncate">
+                  App Private Storage Vaults
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAppVaultsModal(false)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Vaults saved inside CipherPass private app storage (not visible to external system file pickers).
+            </p>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+              {appPrivateVaults.length === 0 ? (
+                <div className="rounded-xl bg-[#07090F] border border-slate-800 p-4 text-center text-xs text-slate-400">
+                  No <code className="text-cyan-300">.kdbx</code> vaults found inside App Private Storage yet.
+                </div>
+              ) : (
+                appPrivateVaults.map((v) => {
+                  const selected = vaultPath === v.path;
+                  const kb = Math.max(1, Math.round(v.size_bytes / 1024));
+                  const fileName = v.path.split(/[\\/]/).pop() || v.name;
+                  return (
+                    <button
+                      key={v.path}
+                      type="button"
+                      onClick={() => {
+                        setVaultPath(v.path);
+                        setShowAppVaultsModal(false);
+                      }}
+                      className={`w-full text-left px-3.5 py-2.5 rounded-xl border transition flex items-center justify-between gap-2 ${
+                        selected
+                          ? "bg-cyan-500/15 border-cyan-400/50 text-cyan-200"
+                          : "bg-[#07090F] border-slate-800 hover:border-slate-700 text-slate-200"
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold truncate">{v.name}</div>
+                        <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
+                          {fileName}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                        {kb} KB
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
