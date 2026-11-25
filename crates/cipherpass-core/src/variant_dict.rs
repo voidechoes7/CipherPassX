@@ -100,7 +100,8 @@ impl VariantDictionary {
                     "VariantDictionary truncated key length".into(),
                 ));
             }
-            let key_len = u32::from_le_bytes(data[offset..key_len_end].try_into().unwrap()) as usize;
+            let key_len =
+                u32::from_le_bytes(data[offset..key_len_end].try_into().unwrap()) as usize;
             offset = key_len_end;
 
             let key_end = offset.checked_add(key_len).ok_or_else(|| {
@@ -128,7 +129,8 @@ impl VariantDictionary {
                     "VariantDictionary truncated value length".into(),
                 ));
             }
-            let val_len = u32::from_le_bytes(data[offset..val_len_end].try_into().unwrap()) as usize;
+            let val_len =
+                u32::from_le_bytes(data[offset..val_len_end].try_into().unwrap()) as usize;
             offset = val_len_end;
 
             let val_end = offset.checked_add(val_len).ok_or_else(|| {

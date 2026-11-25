@@ -190,10 +190,7 @@ impl KdfConfig {
         dict.insert("$UUID", VariantValue::Bytes(self.algorithm.uuid().to_vec()));
         dict.insert("S", VariantValue::Bytes(salt.to_vec()));
         dict.insert("P", VariantValue::UInt32(self.parallelism));
-        let mem_bytes = self
-            .memory_mib
-            .saturating_mul(1024)
-            .saturating_mul(1024);
+        let mem_bytes = self.memory_mib.saturating_mul(1024).saturating_mul(1024);
         dict.insert("M", VariantValue::UInt64(mem_bytes));
         dict.insert("I", VariantValue::UInt64(self.iterations));
         dict.insert("V", VariantValue::UInt32(self.version));

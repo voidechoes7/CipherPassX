@@ -782,7 +782,9 @@ fn parse_group(
                     group.is_expanded = parse_bool(&read_text_until_end(reader, b"IsExpanded")?)
                 }
                 b"Times" => group.times = parse_times(reader)?,
-                b"Entry" => group.entries.push(parse_entry(reader, inner_cipher, false)?),
+                b"Entry" => group
+                    .entries
+                    .push(parse_entry(reader, inner_cipher, false)?),
                 b"Group" => group
                     .subgroups
                     .push(parse_group(reader, inner_cipher, depth + 1)?),

@@ -10,8 +10,6 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use cipherpass_core::crypto::random_bytes;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-use cipherpass_core::{seal_biometric_slot, unseal_biometric_slot, BiometricVaultCredentials};
 use cipherpass_core::{
     atomic_write_file, evaluate_password, export_encrypted_bitwarden_json, generate_keyfile_v2_xml,
     generate_mlkem1024_keypair, generate_passphrase, generate_password, generate_totp_now,
@@ -21,6 +19,8 @@ use cipherpass_core::{
     KdfConfig, MasterCredentials, MlKem1024Keypair, PassphraseGenOptions, PasswordGenOptions,
     ProtectedString, SecurityAuditReport, TotpCode, Vault, VaultEntry, VaultGroup,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use cipherpass_core::{seal_biometric_slot, unseal_biometric_slot, BiometricVaultCredentials};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -66,7 +66,9 @@ fn set_private_dir_permissions(dir: &Path) {
 fn reject_symlink(path: &Path) -> Result<(), String> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         if meta.file_type().is_symlink() {
-            return Err("Symbolic links are not permitted for sensitive key/vault paths".to_string());
+            return Err(
+                "Symbolic links are not permitted for sensitive key/vault paths".to_string(),
+            );
         }
     }
     Ok(())
@@ -74,7 +76,10 @@ fn reject_symlink(path: &Path) -> Result<(), String> {
 
 /// Core path security validator: blocks NUL bytes, `..` traversal components, and any access
 /// targeting the internal `.keystore` directory (checked both lexically and via canonical ancestor).
-fn validate_fs_path_against_keystore(path: &Path, forbidden_keystore_dir: &Path) -> Result<(), String> {
+fn validate_fs_path_against_keystore(
+    path: &Path,
+    forbidden_keystore_dir: &Path,
+) -> Result<(), String> {
     let raw_str = path.to_string_lossy();
     if raw_str.contains('\0') {
         return Err("File path contains invalid NUL byte".to_string());
@@ -484,7 +489,9 @@ impl<'a> UnlockAttemptGuard<'a> {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err("Another unlock operation is already in progress. Please wait.".to_string());
+            return Err(
+                "Another unlock operation is already in progress. Please wait.".to_string(),
+            );
         }
         Ok(Self(flag))
     }
@@ -563,7 +570,14 @@ impl std::fmt::Debug for CustomFieldDto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CustomFieldDto")
             .field("key", &self.key)
-            .field("value", &if self.protected { "[REDACTED]" } else { &self.value })
+            .field(
+                "value",
+                &if self.protected {
+                    "[REDACTED]"
+                } else {
+                    &self.value
+                },
+            )
             .field("protected", &self.protected)
             .finish()
     }
@@ -660,7 +674,10 @@ impl std::fmt::Debug for CreateVaultRequest {
         f.debug_struct("CreateVaultRequest")
             .field("path", &self.path)
             .field("database_name", &self.database_name)
-            .field("master_password", &self.master_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "master_password",
+                &self.master_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("keyfile_path", &self.keyfile_path)
             .finish()
     }
@@ -677,7 +694,10 @@ impl std::fmt::Debug for OpenVaultRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenVaultRequest")
             .field("path", &self.path)
-            .field("master_password", &self.master_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "master_password",
+                &self.master_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("keyfile_path", &self.keyfile_path)
             .finish()
     }
@@ -735,8 +755,14 @@ pub struct ChangeMasterCredentialsRequest {
 impl std::fmt::Debug for ChangeMasterCredentialsRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChangeMasterCredentialsRequest")
-            .field("current_password", &self.current_password.as_ref().map(|_| "[REDACTED]"))
-            .field("new_password", &self.new_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "current_password",
+                &self.current_password.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "new_password",
+                &self.new_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("keyfile_action", &self.keyfile_action)
             .finish()
     }
@@ -903,9 +929,15 @@ impl std::fmt::Debug for CreateVaultFromImportRequest {
         f.debug_struct("CreateVaultFromImportRequest")
             .field("path", &self.path)
             .field("database_name", &self.database_name)
-            .field("master_password", &self.master_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "master_password",
+                &self.master_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("import_kind", &self.import_kind)
-            .field("import_password", &self.import_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "import_password",
+                &self.import_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -1251,11 +1283,9 @@ async fn create_vault(
         None => None,
     };
 
-    let credentials = MasterCredentials::from_password_and_keyfile(
-        req.master_password.clone(),
-        keyfile_bytes,
-    )
-    .map_err(|e| e.to_string())?;
+    let credentials =
+        MasterCredentials::from_password_and_keyfile(req.master_password.clone(), keyfile_bytes)
+            .map_err(|e| e.to_string())?;
 
     let location = resolve_location(&app, &req.path, ".kdbx")?;
     let db_name = req.database_name.clone();
@@ -1322,11 +1352,9 @@ async fn open_vault(
         None => None,
     };
 
-    let credentials = MasterCredentials::from_password_and_keyfile(
-        req.master_password.clone(),
-        keyfile_bytes,
-    )
-    .map_err(|e| e.to_string())?;
+    let credentials =
+        MasterCredentials::from_password_and_keyfile(req.master_password.clone(), keyfile_bytes)
+            .map_err(|e| e.to_string())?;
 
     let location = resolve_location(&app, &req.path, ".kdbx")?;
     let raw_bytes = read_bytes_from_location(&app, &location, MAX_VAULT_FILE_BYTES)?;
@@ -2172,9 +2200,8 @@ fn write_text_file(path: String, content: String, app: AppHandle) -> Result<Stri
     if content.len() as u64 > MAX_PQ_KEY_FILE_BYTES {
         return Err("Key file content exceeds maximum allowed size (16 KiB)".to_string());
     }
-    validate_mlkem1024_key_b64(content.as_str()).map_err(|e| {
-        format!("Refusing to write non-ML-KEM-1024 key payload: {e}")
-    })?;
+    validate_mlkem1024_key_b64(content.as_str())
+        .map_err(|e| format!("Refusing to write non-ML-KEM-1024 key payload: {e}"))?;
 
     let loc = resolve_location(&app, &path, ".pqkey")?;
     if let VaultLocation::FileSystem(ref p) = loc {
@@ -2210,9 +2237,8 @@ fn read_text_file(path: String, app: AppHandle) -> Result<String, String> {
         bad.zeroize();
         "Selected file is not valid UTF-8 text".to_string()
     })?);
-    validate_mlkem1024_key_b64(text.as_str()).map_err(|e| {
-        format!("Selected file is not a valid ML-KEM-1024 key: {e}")
-    })?;
+    validate_mlkem1024_key_b64(text.as_str())
+        .map_err(|e| format!("Selected file is not a valid ML-KEM-1024 key: {e}"))?;
     Ok(text.to_string())
 }
 
@@ -2242,11 +2268,9 @@ async fn create_vault_from_import(
         None => None,
     };
 
-    let credentials = MasterCredentials::from_password_and_keyfile(
-        req.master_password.clone(),
-        keyfile_bytes,
-    )
-    .map_err(|e| e.to_string())?;
+    let credentials =
+        MasterCredentials::from_password_and_keyfile(req.master_password.clone(), keyfile_bytes)
+            .map_err(|e| e.to_string())?;
 
     let default_import_ext = if req.import_kind == "csv" {
         ".csv"
@@ -2269,13 +2293,11 @@ async fn create_vault_from_import(
     let (vault, credentials, summary, bytes) = tauri::async_runtime::spawn_blocking(move || {
         let mut vault = Vault::new(db_name, cipher, kdf);
         let summary = if import_kind == "csv" {
-            let csv_text = Zeroizing::new(
-                String::from_utf8(raw_import.to_vec()).map_err(|e| {
-                    let mut bad = e.into_bytes();
-                    bad.zeroize();
-                    "CSV file must be valid UTF-8 text".to_string()
-                })?,
-            );
+            let csv_text = Zeroizing::new(String::from_utf8(raw_import.to_vec()).map_err(|e| {
+                let mut bad = e.into_bytes();
+                bad.zeroize();
+                "CSV file must be valid UTF-8 text".to_string()
+            })?);
             import_csv(csv_text.as_str(), &mut vault).map_err(|e| e.to_string())?
         } else {
             import_bitwarden_json(
@@ -2504,7 +2526,9 @@ async fn update_security_settings(
             };
             if sess.session_id != expected_sid {
                 next_vault.zeroize_secrets();
-                return Err("Active vault session changed while updating security settings".to_string());
+                return Err(
+                    "Active vault session changed while updating security settings".to_string(),
+                );
             }
             write_bytes_to_location(&app, &loc_clone, bytes.as_slice())?;
             sess.vault.zeroize_secrets();
@@ -2609,7 +2633,9 @@ async fn change_master_credentials(
             return Err("Vault was locked while changing Master Credentials".to_string());
         };
         if sess.session_id != expected_sid {
-            return Err("Active vault session changed while changing Master Credentials".to_string());
+            return Err(
+                "Active vault session changed while changing Master Credentials".to_string(),
+            );
         }
         write_bytes_to_location(&app, &loc_clone, bytes.as_slice())?;
         let reset = wipe_biometric_slot(&app, &canonical);
@@ -3047,13 +3073,10 @@ async fn unlock_vault_biometric(
             load_or_create_device_secret(&app)?
         };
 
-        let slot_bytes = read_bytes_from_location(
-            &app,
-            &VaultLocation::FileSystem(slot_path),
-            64 * 1024,
-        )?;
-        let bio_creds = unseal_biometric_slot(&slot_bytes, &slot_key, &vault_id)
-            .map_err(|e| e.to_string())?;
+        let slot_bytes =
+            read_bytes_from_location(&app, &VaultLocation::FileSystem(slot_path), 64 * 1024)?;
+        let bio_creds =
+            unseal_biometric_slot(&slot_bytes, &slot_key, &vault_id).map_err(|e| e.to_string())?;
 
         let saved_kf_path = bio_creds.keyfile_path.clone();
         let keyfile_bytes = match saved_kf_path {
@@ -3169,8 +3192,7 @@ pub fn run() {
                 if now >= deadline {
                     guard.deadline = None;
                     drop(guard);
-                    if clipboard_state.clipboard_generation.load(Ordering::SeqCst) == expected_gen
-                    {
+                    if clipboard_state.clipboard_generation.load(Ordering::SeqCst) == expected_gen {
                         let _ = clip_app.clipboard().clear();
                         let _ = clip_app.emit("clipboard-cleared", ());
                     }
@@ -3250,7 +3272,11 @@ mod security_tests {
         assert!(validate_fs_path_against_keystore(Path::new("/tmp/foo\0bar.kdbx"), ks).is_err());
 
         // Parent directory traversal
-        assert!(validate_fs_path_against_keystore(Path::new("/tmp/vaults/../.keystore/device.key"), ks).is_err());
+        assert!(validate_fs_path_against_keystore(
+            Path::new("/tmp/vaults/../.keystore/device.key"),
+            ks
+        )
+        .is_err());
         assert!(validate_fs_path_against_keystore(Path::new("../etc/passwd"), ks).is_err());
 
         // Direct .keystore targeting
@@ -3259,7 +3285,10 @@ mod security_tests {
         assert!(validate_fs_path_against_keystore(&ks.join("abc.bio"), ks).is_err());
 
         // Legitimate vault path outside .keystore
-        assert!(validate_fs_path_against_keystore(Path::new("/tmp/app_data/vaults/main.kdbx"), ks).is_ok());
+        assert!(
+            validate_fs_path_against_keystore(Path::new("/tmp/app_data/vaults/main.kdbx"), ks)
+                .is_ok()
+        );
     }
 
     #[cfg(unix)]
@@ -3297,7 +3326,9 @@ mod security_tests {
         assert!(has_allowed_pq_key_extension(Path::new("/tmp/a.txt")));
         assert!(!has_allowed_pq_key_extension(Path::new("/etc/passwd")));
         assert!(!has_allowed_pq_key_extension(Path::new("/home/u/.bashrc")));
-        assert!(!has_allowed_pq_key_extension(Path::new("/home/u/.ssh/id_rsa")));
+        assert!(!has_allowed_pq_key_extension(Path::new(
+            "/home/u/.ssh/id_rsa"
+        )));
         assert!(!has_allowed_pq_key_extension(Path::new("/tmp/evil.sh")));
 
         // Arbitrary shell script / config / JSON must fail ML-KEM-1024 validation
@@ -3342,4 +3373,3 @@ mod security_tests {
         assert!(!debug_str.contains("Pin 9876"));
     }
 }
-

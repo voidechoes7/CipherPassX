@@ -22,7 +22,10 @@ pub struct BiometricVaultCredentials {
 impl std::fmt::Debug for BiometricVaultCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BiometricVaultCredentials")
-            .field("master_password", &self.master_password.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "master_password",
+                &self.master_password.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("keyfile_path", &self.keyfile_path)
             .finish()
     }

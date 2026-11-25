@@ -291,9 +291,9 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
     let (kdf_config, kdf_salt) = KdfConfig::from_variant_dict(&kdf_dict)?;
 
     // 2. Verify Header SHA-256 (fast integrity check before expensive KDF)
-    let macs_end = header_end.checked_add(64).ok_or_else(|| {
-        CipherPassError::MalformedFormat("Header HMAC offset overflow".into())
-    })?;
+    let macs_end = header_end
+        .checked_add(64)
+        .ok_or_else(|| CipherPassError::MalformedFormat("Header HMAC offset overflow".into()))?;
     if macs_end > data.len() {
         return Err(CipherPassError::MalformedFormat(
             "Truncated header hash / HMAC".into(),
@@ -335,17 +335,14 @@ pub fn open_kdbx_bytes(data: &[u8], credentials: &MasterCredentials) -> Result<V
             ));
         }
         let stored_block_hmac = &data[stream_offset..stream_offset + 32];
-        let block_size = u32::from_le_bytes(
-            data[stream_offset + 32..blk_hdr_end]
-                .try_into()
-                .unwrap(),
-        );
+        let block_size =
+            u32::from_le_bytes(data[stream_offset + 32..blk_hdr_end].try_into().unwrap());
         stream_offset = blk_hdr_end;
 
         let block_len = block_size as usize;
-        let blk_data_end = stream_offset.checked_add(block_len).ok_or_else(|| {
-            CipherPassError::MalformedFormat("HMAC block length overflow".into())
-        })?;
+        let blk_data_end = stream_offset
+            .checked_add(block_len)
+            .ok_or_else(|| CipherPassError::MalformedFormat("HMAC block length overflow".into()))?;
         if blk_data_end > data.len() {
             return Err(CipherPassError::MalformedFormat(
                 "Truncated HMAC block payload".into(),

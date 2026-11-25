@@ -112,11 +112,7 @@ pub fn generate_password(opts: &PasswordGenOptions) -> GeneratedSecret {
         groups.push(filter("0123456789"));
     }
 
-    let pool: Vec<u8> = groups
-        .iter()
-        .flatten()
-        .map(|c| *c as u8)
-        .collect();
+    let pool: Vec<u8> = groups.iter().flatten().map(|c| *c as u8).collect();
     let mut bytes = Zeroizing::new(Vec::with_capacity(length));
 
     // Guarantee at least one character from each enabled class

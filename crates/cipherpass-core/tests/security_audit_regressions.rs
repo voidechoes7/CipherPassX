@@ -226,7 +226,11 @@ fn kdbx4_malformed_and_overflowing_headers_do_not_panic() {
 #[test]
 fn kdbx_xml_injection_metacharacters_roundtrip_and_xxe_dos_rejection() {
     // 1. XML injection payload round-trip inside KDBX 4
-    let mut vault = Vault::new("Xml</DatabaseName><Evil/>", CipherAlgorithm::ChaCha20, fast_test_kdf());
+    let mut vault = Vault::new(
+        "Xml</DatabaseName><Evil/>",
+        CipherAlgorithm::ChaCha20,
+        fast_test_kdf(),
+    );
     let mut entry = VaultEntry::new("Login & <\"'> ]]> </Value>");
     entry.username = "user</Value><Key>Password</Key><Value>pwned".to_string();
     entry.password = ProtectedString::new("p@ss<&>'\"</Value><String>");
@@ -238,7 +242,8 @@ fn kdbx_xml_injection_metacharacters_roundtrip_and_xxe_dos_rejection() {
     });
     vault.root_group.entries.push(entry.clone());
 
-    let creds = MasterCredentials::from_password_and_keyfile(Some("XmlTest!".into()), None).unwrap();
+    let creds =
+        MasterCredentials::from_password_and_keyfile(Some("XmlTest!".into()), None).unwrap();
     let bytes = save_kdbx_bytes(&vault, &creds).unwrap();
     let opened = open_kdbx_bytes(&bytes, &creds).unwrap();
     assert_eq!(opened.meta.database_name, vault.meta.database_name);
@@ -377,7 +382,8 @@ fn bitwarden_interchange_mac_before_decrypt_kdf_bounds_whitespace_and_depth() {
     let exported = export_encrypted_bitwarden_json(&src_vault, spaced_pw).expect("export");
 
     let mut dst_vault = Vault::new("Dst", CipherAlgorithm::ChaCha20, fast_test_kdf());
-    let summary = import_bitwarden_json(&exported, Some(spaced_pw), &mut dst_vault).expect("import");
+    let summary =
+        import_bitwarden_json(&exported, Some(spaced_pw), &mut dst_vault).expect("import");
     assert_eq!(summary.imported_entries, 1);
 
     // 2. Bit-flipping IV, ciphertext, or MAC in `data` must fail Encrypt-then-MAC
@@ -403,12 +409,12 @@ fn bitwarden_interchange_mac_before_decrypt_kdf_bounds_whitespace_and_depth() {
 
     // 3. Extreme KDF DoS parameters must be rejected immediately (no silent clamping, no OOM)
     for (kdf_type, iter, mem, par) in [
-        (1, 3, 4096, 4),        // 4 GiB Argon2
-        (1, 500, 64, 4),        // 500 Argon2 rounds
-        (1, 3, 64, 64),         // 64 Argon2 lanes
-        (1, 3, 4, 4),           // Below 16 MiB minimum
-        (0, 5_000_000, 64, 4),  // 5M PBKDF2 rounds
-        (0, 0, 64, 4),          // 0 PBKDF2 rounds
+        (1, 3, 4096, 4),       // 4 GiB Argon2
+        (1, 500, 64, 4),       // 500 Argon2 rounds
+        (1, 3, 64, 64),        // 64 Argon2 lanes
+        (1, 3, 4, 4),          // Below 16 MiB minimum
+        (0, 5_000_000, 64, 4), // 5M PBKDF2 rounds
+        (0, 0, 64, 4),         // 0 PBKDF2 rounds
     ] {
         parsed["kdfType"] = serde_json::json!(kdf_type);
         parsed["kdfIterations"] = serde_json::json!(iter);
@@ -436,8 +442,12 @@ fn bitwarden_interchange_mac_before_decrypt_kdf_bounds_whitespace_and_depth() {
         }]
     });
     let mut deep_vault = Vault::new("Deep", CipherAlgorithm::ChaCha20, fast_test_kdf());
-    let res = import_bitwarden_json(&serde_json::to_vec(&deep_json).unwrap(), None, &mut deep_vault)
-        .expect("deep folder import should succeed safely");
+    let res = import_bitwarden_json(
+        &serde_json::to_vec(&deep_json).unwrap(),
+        None,
+        &mut deep_vault,
+    )
+    .expect("deep folder import should succeed safely");
     assert_eq!(res.imported_entries, 1);
     assert!(
         res.created_folders <= 32,
@@ -510,7 +520,8 @@ fn biometric_slot_v2_v1_compat_aad_mismatch_bitflips_and_validation() {
     legacy_blob.extend_from_slice(&nonce);
     legacy_blob.extend_from_slice(&ct);
 
-    let legacy_opened = unseal_biometric_slot(&legacy_blob, &key, "vault_legacy").expect("v1 compat");
+    let legacy_opened =
+        unseal_biometric_slot(&legacy_blob, &key, "vault_legacy").expect("v1 compat");
     assert_eq!(legacy_opened.master_password, creds.master_password);
 }
 
