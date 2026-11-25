@@ -109,9 +109,13 @@ jobs:
           if inject_perms:
               m = m.replace("<application", f"    {inject_perms}\n    <application", 1)
           if 'android:allowBackup=' not in m:
-              m = m.replace("<application", '<application android:allowBackup="false" android:usesCleartextTraffic="false" android:requestLegacyExternalStorage="true"', 1)
+              m = m.replace("<application", '<application android:allowBackup="false" android:requestLegacyExternalStorage="true"', 1)
           else:
-              m = m.replace('android:allowBackup="true"', 'android:allowBackup="false" android:usesCleartextTraffic="false" android:requestLegacyExternalStorage="true"')
+              m = m.replace('android:allowBackup="true"', 'android:allowBackup="false" android:requestLegacyExternalStorage="true"')
+          if 'android:usesCleartextTraffic=' in m:
+              m = re.sub(r'android:usesCleartextTraffic="[^"]*"', 'android:usesCleartextTraffic="false"', m)
+          else:
+              m = m.replace("<application", '<application android:usesCleartextTraffic="false"', 1)
           if 'android:windowSoftInputMode=' not in m:
               m = m.replace("<activity", '<activity android:windowSoftInputMode="adjustResize"', 1)
           open(manifest, "w", encoding="utf-8").write(m)
